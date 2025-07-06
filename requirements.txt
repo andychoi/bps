@@ -1,0 +1,20 @@
+django
+crispy
+crispy-bootstrap5==2024.10 # Exact pin as in original
+django_filter~=24.3
+django_object_actions~=4.3
+django-mass-edit~=3.5.0
+django-import-export~=4.3.8
+django-adminfilters~=2.5
+django-admin-list-filter-dropdown~=1.0
+django-autocomplete-light~=3.12.1
+django-select2~=8.2
+
+djangorestframework~=3.15
+django-cors-headers~=4.0 # Pinned to a recent compatible version
+drf-yasg~=1.21 # Pinned to a recent compatible version
+
+requests~=2.32
+
+# Data Generation
+faker~=24.0 # Pinned to a recent compatible version
