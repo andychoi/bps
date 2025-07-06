@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% load static %}
+{% block content %}
+<div class="container py-4">
+  <h1 class="mb-4">Planning Dashboard</h1>
+
+  <!-- Year Selector -->
+  <div class="row mb-4">
+    <div class="col-md-4">
+      <div class="card">
+        <div class="card-header">Select Planning Year</div>
+        <div class="card-body p-3">
+          <form method="get">
+            <select name="year" class="form-select" onchange="this.form.submit()">
+              {% for y in all_years %}
+                <option value="{{ y }}" {% if y == selected_year %}selected{% endif %}>
+                  {{ y }}
+                </option>
+              {% endfor %}
+            </select>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row gy-4">
+    <!-- Incomplete Tasks -->
+    <div class="col-md-6">
+      <div class="card h-100">
+        <div class="card-header bg-warning text-white">Incomplete Planning Tasks</div>
+        <ul class="list-group list-group-flush">
+          {% for sess in incomplete_sessions %}
+            <li class="list-group-item">
+              <a href="{% url 'bps:session_detail' sess.pk %}">
+                {{ sess.org_unit.name }} &dash; {{ sess.layout_year.layout.name }}
+              </a>
+            </li>
+          {% empty %}
+            <li class="list-group-item">None—everything is up to date!</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+
+    <!-- Available Layouts -->
+    <div class="col-md-6">
+      <div class="card h-100">
+        <div class="card-header bg-info text-white">Available Layouts</div>
+        <div class="card-body">
+          <div class="row row-cols-1 row-cols-md-2 g-3">
+            {% for ly in layouts %}
+              <div class="col">
+                <div class="card h-100">
+                  <div class="card-body p-2">
+                    <h5 class="card-title mb-1">{{ ly.layout.name }}</h5>
+                    <p class="card-text small mb-0">Version: {{ ly.version.code }}</p>
+                  </div>
+                  <div class="card-footer text-end">
+                    <a href="{% url 'bps:session_list' %}?layout_year={{ ly.pk }}"
+                       class="btn btn-sm btn-outline-primary">
+                       Open
+                    </a>
+                  </div>
+                </div>
+              </div>
+            {% empty %}
+              <p class="text-muted">No layouts defined for {{ selected_year }}.</p>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Planning Functions -->
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-header bg-success text-white">Planning Functions</div>
+        <div class="card-body">
+          <div class="list-group">
+            {% for fn in planning_funcs %}
+              <a href="{% url fn.url %}" class="list-group-item list-group-item-action">
+                {{ fn.name }}
+              </a>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Admin Links -->
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-header bg-secondary text-white">Admin</div>
+        <div class="card-body">
+          <div class="list-group">
+            {% for link in admin_links %}
+              <a href="{% url link.url %}" class="list-group-item list-group-item-action">
+                {{ link.name }}
+              </a>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% load crispy_forms_tags %}
+{% block content %}
+<h1>Formulas</h1>
+<form method="post" class="mb-4">{% csrf_token %}
+  {{ form|crispy }}
+</form>
+<table class="table">
+  <thead><tr><th>Name</th><th>Loop Dim</th><th>Expression</th><th>Actions</th></tr></thead>
+  <tbody>
+    {% for f in formulas %}
+      <tr>
+        <td>{{ f.name }}</td>
+        <td>{{ f.loop_dimension.model }}</td>
+        <td><code>{{ f.expression }}</code></td>
+        <td>
+          <a href="{% url 'formula_run' f.pk %}?period=01" class="btn btn-sm btn-primary">
+            Run
+          </a>
+        </td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% load crispy_forms_tags %}
+{% block content %}
+<div class="container my-4">
+  <h1>Facts for Request {{ dr.id }}</h1>
+  <form method="post" class="row g-3 align-items-end mb-4">{% csrf_token %}
+    <div class="col-md-2">
+      {{ form.session|as_crispy_field }}
+    </div>
+    <div class="col-md-2">
+      {{ form.period|as_crispy_field }}
+    </div>
+    <div class="col-md-2">
+      {{ form.quantity|as_crispy_field }}
+    </div>
+    <div class="col-md-2">
+      {{ form.quantity_uom|as_crispy_field }}
+    </div>
+    <div class="col-md-2">
+      {{ form.amount|as_crispy_field }}
+    </div>
+    <div class="col-md-2">
+      {{ form.amount_uom|as_crispy_field }}
+    </div>
+    <div class="col-md-3">
+      {{ form.other_key_figure|as_crispy_field }}
+    </div>
+    <div class="col-md-3">
+      {{ form.other_value|as_crispy_field }}
+    </div>
+    <div class="col-md-2">
+      <button type="submit" class="btn btn-primary">Save Fact</button>
+      <a href="{% url 'bps:data_request_detail' dr.pk %}" class="btn btn-link">Done</a>
+    </div>
+  </form>
+
+  <table class="table table-bordered">
+    <thead>
+      <tr>
+        <th>Period</th><th>Qty</th><th>UoM</th>
+        <th>Amount</th><th>UoM</th><th>Other</th><th>Value</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in facts %}
+      <tr>
+        <td>{{ f.period }}</td>
+        <td>{{ f.quantity }}</td>
+        <td>{{ f.quantity_uom }}</td>
+        <td>{{ f.amount }}</td>
+        <td>{{ f.amount_uom }}</td>
+        <td>{{ f.other_key_figure }}</td>
+        <td>{{ f.other_value }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7">No facts yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

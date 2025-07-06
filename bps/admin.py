@@ -3,6 +3,7 @@
 from django.contrib import admin
 from django.contrib.contenttypes.admin import GenericTabularInline
 from .models import (
+    Constant, SubFormula, Formula, FormulaRun, FormulaRunEntry,
     UnitOfMeasure, ConversionRate,
     Year, Version, OrgUnit, CostCenter, InternalOrder,
     UserMaster, PlanningLayout, PlanningLayoutYear,
@@ -22,7 +23,40 @@ class ConversionRateAdmin(admin.ModelAdmin):
     list_display = ('from_uom', 'to_uom', 'factor')
     list_filter  = ('from_uom', 'to_uom')
 
+# ── Formula & Sub-Formula ─────────────────────────────────────────────────
 
+@admin.register(Constant)
+class ConstantAdmin(admin.ModelAdmin):
+    list_display  = ('name', 'value')
+    search_fields = ('name',)
+
+@admin.register(SubFormula)
+class SubFormulaAdmin(admin.ModelAdmin):
+    list_display  = ('name',)
+    search_fields = ('name',)
+
+@admin.register(Formula)
+class FormulaAdmin(admin.ModelAdmin):
+    list_display  = ('name', 'loop_dimension')
+    search_fields = ('name',)
+    save_on_top  = True
+
+# ── Formula Runs & Entries ────────────────────────────────────────────────
+
+class FormulaRunEntryInline(admin.TabularInline):
+    model = FormulaRunEntry
+    extra = 0
+    fields = ('record', 'key', 'old_value', 'new_value')
+    readonly_fields = fields
+
+@admin.register(FormulaRun)
+class FormulaRunAdmin(admin.ModelAdmin):
+    list_display   = ('id', 'formula', 'run_at', 'preview')
+    list_filter    = ('formula','preview')
+    readonly_fields= ('formula','run_at','preview')
+    inlines        = [FormulaRunEntryInline]
+    ordering       = ('-run_at',)
+    
 # ── InfoObject‐derived Dimensions ───────────────────────────────────────────
 
 class InfoObjectAdmin(admin.ModelAdmin):

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% load crispy_forms_tags %}
+{% block content %}
+<div class="container my-4">
+  <h1>Global Variables</h1>
+  <form method="post" class="row g-3 align-items-end mb-4">{% csrf_token %}
+    <div class="col-md-4">
+      {{ form.name|as_crispy_field }}
+    </div>
+    <div class="col-md-4">
+      {{ form.value|as_crispy_field }}
+    </div>
+    <div class="col-md-8">
+      {{ form.description|as_crispy_field }}
+    </div>
+    <div class="col-md-2">
+      <button type="submit" class="btn btn-primary">Add Variable</button>
+    </div>
+  </form>
+
+  <table class="table table-hover">
+    <thead>
+      <tr><th>Name</th><th>Value</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      {% for v in consts %}
+      <tr>
+        <td>{{ v.name }}</td>
+        <td>{{ v.value }}</td>
+        <td>{{ v.description }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="3">No variables defined.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

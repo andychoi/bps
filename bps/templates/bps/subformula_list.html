@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% load crispy_forms_tags %}
+{% block content %}
+<h1>Sub-Formulas</h1>
+<form method="post" class="mb-4">{% csrf_token %}
+  {{ form|crispy }}
+</form>
+<table class="table">
+  <thead><tr><th>Name</th><th>Expression</th></tr></thead>
+  <tbody>
+    {% for s in subs %}
+      <tr><td>{{ s.name }}</td><td><code>{{ s.expression }}</code></td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

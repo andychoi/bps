@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container my-4">
+  <h1>Data Requests</h1>
+  <ul class="list-group mt-3">
+    {% for dr in data_requests %}
+      <li class="list-group-item d-flex justify-content-between align-items-center">
+        <a href="{% url 'bps:data_request_detail' dr.pk %}">
+          {{ dr.id }} – {{ dr.description|default:"(no description)" }}
+        </a>
+        <span class="badge bg-secondary">
+          {{ dr.created_at|date:"Y-m-d H:i" }}
+        </span>
+      </li>
+    {% empty %}
+      <li class="list-group-item">No data requests found.</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endblock %}

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% load crispy_forms_tags %}
+{% block content %}
+<div class="container my-4">
+  <h1>Data Request {{ dr.id }}</h1>
+  <form method="post" class="mb-4">{% csrf_token %}
+    {{ form|crispy }}
+    <button type="submit" class="btn btn-primary">Update</button>
+    <a href="{% url 'bps:data_request_list' %}" class="btn btn-link">Back to list</a>
+  </form>
+
+  <h2>Facts</h2>
+  <table class="table table-striped">
+    <thead>
+      <tr>
+        <th>Period</th>
+        <th>Qty</th>
+        <th>UoM</th>
+        <th>Amount</th>
+        <th>UoM</th>
+        <th>Other</th>
+        <th>Value</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in facts %}
+      <tr>
+        <td>{{ f.period }}</td>
+        <td>{{ f.quantity }}</td>
+        <td>{{ f.quantity_uom }}</td>
+        <td>{{ f.amount }}</td>
+        <td>{{ f.amount_uom }}</td>
+        <td>{{ f.other_key_figure }}</td>
+        <td>{{ f.other_value }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7">No facts recorded yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <a href="{% url 'bps:fact_list' dr.pk %}" class="btn btn-success">Add/Edit Facts</a>
+</div>
+{% endblock %}

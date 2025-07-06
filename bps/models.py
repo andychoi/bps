@@ -4,6 +4,7 @@ from uuid import uuid4
 from django.db import models
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
+from decimal import Decimal
 # from django.contrib.postgres.fields import JSONField
 
 # ── 1. InfoObject Base & Dimension Models ─────────────────────────────────
@@ -322,3 +323,75 @@ class GlobalVariable(models.Model):
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True)
     value = models.DecimalField(max_digits=18, decimal_places=6)    
+
+class Constant(models.Model):
+    """
+    A named constant for use in formulas, e.g. TAX_RATE=0.15.
+    """
+    name  = models.CharField(max_length=100, unique=True)
+    value = models.DecimalField(max_digits=18, decimal_places=6)
+
+    def __str__(self):
+        return f"{self.name} = {self.value}"
+
+
+class SubFormula(models.Model):
+    """
+    A reusable sub‐expression fragment, referenced in formulas via $NAME.
+    """
+    name       = models.CharField(max_length=100, unique=True)
+    expression = models.TextField(
+        help_text="Expression using other constants/sub‐formulas, e.g. [Year=2025]?.[Qty] * TAX_RATE"
+    )
+
+    def __str__(self):
+        return self.name
+
+
+class Formula(models.Model):
+    """
+    A full formula. loop_dimension tells Executor which dimension to iterate.
+    Expression syntax:  [Dim=val,…]?.[Key] = <arithmetic with [..]?.[..], $SUB, CONSTANT>
+    """
+    name           = models.CharField(max_length=100, unique=True)
+    loop_dimension = models.ForeignKey(
+        ContentType,
+        on_delete=models.CASCADE,
+        help_text="InfoObject (e.g. Product) to loop over"
+    )
+    expression     = models.TextField(
+        help_text="e.g. [OrgUnit=12,Product=$LOOP]?.[amount] = [..]?.[quantity] * $RATE"
+    )
+
+    def __str__(self):
+        return self.name
+
+
+class FormulaRun(models.Model):
+    """
+    Audit of a single formula execution.
+    """
+    formula   = models.ForeignKey(Formula, on_delete=models.CASCADE)
+    run_at    = models.DateTimeField(auto_now_add=True)
+    preview   = models.BooleanField(default=False)
+    run_by    = models.ForeignKey(settings.AUTH_USER_MODEL,
+                                  null=True, on_delete=models.SET_NULL)
+
+    def __str__(self):
+        return f"Run #{self.pk} of {self.formula.name} @ {self.run_at}"
+
+
+class FormulaRunEntry(models.Model):
+    """
+    One “cell” change by a FormulaRun.
+    """
+    run        = models.ForeignKey(FormulaRun, related_name='entries', on_delete=models.CASCADE)
+    record     = models.ForeignKey('PlanningFact', on_delete=models.CASCADE)
+    key        = models.CharField(max_length=100)       # e.g. 'amount' or 'other_key'
+    old_value  = models.DecimalField(max_digits=18, decimal_places=6)
+    new_value  = models.DecimalField(max_digits=18, decimal_places=6)
+
+    def __str__(self):
+        return f"{self.record} :: {self.key}: {self.old_value} → {self.new_value}"
+    
+        
