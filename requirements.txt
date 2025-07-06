@@ -1,4 +1,8 @@
 django
+psycopg
+psycopg-binary==3.2.3
+
+
 crispy
 crispy-bootstrap5==2024.10 # Exact pin as in original
 django_filter~=24.3

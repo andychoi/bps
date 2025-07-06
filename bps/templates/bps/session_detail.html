@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% load crispy_forms_tags %}
+{% block content %}
+<h1>Planning: {{ sess.org_unit }} / {{ sess.layout_year }}</h1>
+
+{% if sess.can_edit(request.user) %}
+  <form method="post" class="mb-3">{% csrf_token %}
+    {{ form|crispy }}
+  </form>
+{% endif %}
+
+<h2>Period Definition</h2>
+<form method="post" class="mb-3">{% csrf_token %}
+  {{ period_form|crispy }}
+</form>
+
+<div id="period-table">
+  <vue-period-table
+    :buckets='{{ periods|safe }}'
+  />
+</div>
+
+<h2>Current Facts ({{ dr.description }})</h2>
+<table class="table table-sm">
+  <thead>
+    <tr>
+      <th>Period</th>
+      <th>Key Figure</th>
+      <th>Value</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for f in facts %}
+    <tr>
+      <td>{{ f.period }}</td>
+      <td>{{ f.key_figure }}</td>
+      <td>{{ f.value }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% if sess.status == sess.Status.DRAFT and request.user == sess.org_unit.head_user %}
+  <form method="post">
+    {% csrf_token %}
+    <button name="complete" class="btn btn-success">Mark Completed</button>
+  </form>
+{% endif %}
+{% if sess.status == sess.Status.COMPLETED and request.user.is_staff %}
+  <form method="post">
+    {% csrf_token %}
+    <button name="freeze" class="btn btn-danger">Freeze Session</button>
+  </form>
+{% endif %}
+{% endblock %}
+
+<script src="https://unpkg.com/vue@3"></script>
+<script>
+const app = Vue.createApp({});
+app.component('vue-period-table', {
+  props:['buckets'],
+  template: `
+    <table class="table table-bordered">
+      <thead>
+        <tr>
+          <th v-for="b in buckets">{{ b.name }}</th>
+        </tr>
+      </thead>
+    </table>`
+});
+app.mount('#period-table');
+</script>
