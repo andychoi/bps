@@ -2,6 +2,7 @@ django
 psycopg
 psycopg-binary==3.2.3
 
+django-treebeard~=4.7.1
 
 crispy
 crispy-bootstrap5==2024.10 # Exact pin as in original

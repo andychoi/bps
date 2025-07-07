@@ -2,12 +2,14 @@
 
 from uuid import uuid4
 from django.db import models
+from django.db.models import Sum
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from decimal import Decimal
+from treebeard.mp_tree import MP_Node
 # from django.contrib.postgres.fields import JSONField
 
-# ── 1. InfoObject Base & Dimension Models ─────────────────────────────────
+# ── 0. Cross Models ─────────────────────────────────
 
 class UnitOfMeasure(models.Model):
     """
@@ -37,6 +39,8 @@ class ConversionRate(models.Model):
     def __str__(self):
         return f"1 {self.from_uom} → {self.factor} {self.to_uom}"
     
+# ── 1. InfoObject Base & Dimension Models ─────────────────────────────────
+
 class InfoObject(models.Model):
     """
     Abstract base for any dimension (Year, Period, Version, OrgUnit, etc.).
@@ -56,29 +60,63 @@ class InfoObject(models.Model):
 
 class Year(InfoObject):
     """e.g. code='2025', name='Fiscal Year 2025'"""
+    pass
 
 class Version(InfoObject):
     """
     A global dimension (e.g. 'Draft', 'Final', 'Plan v1', 'Plan v2').
     Used to isolate concurrent planning streams.
     """
+    pass
 
-class OrgUnit(InfoObject):
+class OrgUnit(MP_Node, InfoObject):
     head_user      = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL, null=True, blank=True,
         help_text="OrgUnit lead who must draft and approve"
     )
-    parent         = models.ForeignKey(
-        'self',
-        on_delete=models.SET_NULL, null=True, blank=True,
-        related_name='children'
-    )
+    # parent         = models.ForeignKey(
+    #     'self',
+    #     on_delete=models.SET_NULL, null=True, blank=True,
+    #     related_name='children'
+    # )
     cc_code    = models.CharField(max_length=10, blank=True)    # SAP cost center code
+    node_order_by = ['order', 'code']  # controls sibling ordering
 
 class Account(InfoObject):
     pass
 
+class Service(InfoObject):
+    category         = models.CharField(max_length=50)    # e.g. Platform, Security
+    subcategory      = models.CharField(max_length=50)    # e.g. Directory Services
+    related_services = models.ManyToManyField('self', blank=True)
+    CRITICALITY_CHOICES = [('H','High'),('M','Medium'),('L','Low')]
+    criticality      = models.CharField(max_length=1, choices=CRITICALITY_CHOICES)
+    sla_response     = models.DurationField(help_text="e.g. PT2H for 2 hours")
+    sla_resolution   = models.DurationField(help_text="e.g. PT4H for 4 hours")
+    availability     = models.DecimalField(max_digits=5, decimal_places=3,
+                                           help_text="e.g. 99.900")
+    SUPPORT_HOUR_CHOICES = [
+        ('24x7','24×7'),
+        ('9x5','9×5 Mon–Fri'),
+        ('custom','Custom')
+    ]
+    support_hours    = models.CharField(max_length=10,
+                                        choices=SUPPORT_HOUR_CHOICES)
+    orgunit      = models.ForeignKey('OrgUnit',
+                                         on_delete=models.SET_NULL,
+                                         null=True, blank=True)
+    owner            = models.ForeignKey(settings.AUTH_USER_MODEL,
+                                         on_delete=models.SET_NULL,
+                                         null=True, blank=True)
+    is_active        = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['category','subcategory','code']
+
+    def __str__(self):
+        return f"{self.code} – {self.name}"
+    
 class CostCenter(InfoObject):
     pass
 
@@ -99,22 +137,73 @@ class UserMaster(models.Model):
 
 class CBU(InfoObject):
     """Client Business Unit (inherits InfoObject)"""
+    group       = models.CharField(max_length=50, blank=True)  # e.g. industry vertical
+    TIER_CHOICES = [('1','Tier-1'),('2','Tier-2'),('3','Tier-3')]
+    tier        = models.CharField(max_length=1, choices=TIER_CHOICES)
+    sla_profile = models.ForeignKey('SLAProfile', on_delete=models.SET_NULL,
+                                    null=True, blank=True)
+    region      = models.CharField(max_length=50, blank=True)
+    is_active   = models.BooleanField(default=True)
 
+    node_order_by = ['cbu_code']
+
+    def __str__(self):
+        return f"{self.code} – {self.name}"
+
+class SLAProfile(models.Model):
+    name           = models.CharField(max_length=50, unique=True)
+    response_time  = models.DurationField()
+    resolution_time= models.DurationField()
+    availability   = models.DecimalField(max_digits=5, decimal_places=3)
+    description    = models.TextField(blank=True)
+
+    def __str__(self):
+        return self.name
+    
+class KeyFigure(models.Model):
+    """ “PlanAmount”, “ActualQuantity”, “FTE”, “Utilization%”, etc.
+    """
+    code = models.CharField(max_length=100, unique=True)
+    name = models.CharField(max_length=200)
+    is_percent = models.BooleanField(default=False)
+    default_uom = models.ForeignKey(UnitOfMeasure, null=True, on_delete=models.SET_NULL)
 
 # ── 2. PlanningLayout & Year‐Scoped Layouts ─────────────────────────────────
 
 class PlanningLayout(models.Model):
     """
     Defines which dims & periods & key‐figures go into a layout.
-    Can be versioned per year.
     """
-    name        = models.CharField(max_length=100, unique=True)
-    description = models.TextField(blank=True)
-    # eg. ["Revenue","Qty"]
-    key_figures = models.JSONField(default=list)
+    code = models.CharField(max_length=100, unique=True)
+    title = models.CharField(max_length=200)
+    domain = models.CharField(max_length=100)  # e.g. 'resource', 'cost', 'demand'
+    default = models.BooleanField(default=False)
 
     def __str__(self):
-        return self.name
+        return self.code
+
+class PlanningDimension(models.Model):
+    """ Specifies what dimensions are visible, editable, filtered.
+    """
+    layout = models.ForeignKey(PlanningLayout, related_name="dimensions", on_delete=models.CASCADE)
+    name = models.CharField(max_length=100)  # e.g. "SkillGroup", "System", "ServiceType"
+    label = models.CharField(max_length=100)
+    is_row = models.BooleanField(default=False)
+    is_column = models.BooleanField(default=False)
+    is_filter = models.BooleanField(default=True)
+    is_editable = models.BooleanField(default=False)
+    required = models.BooleanField(default=True)
+    data_source = models.CharField(max_length=100)  # optional: e.g. 'SkillGroup.objects.all()'
+
+class PlanningKeyFigure(models.Model):
+    """ Key figures used in the layout: amount, quantity, derived ones.
+    """
+    layout = models.ForeignKey(PlanningLayout, related_name="key_figures", on_delete=models.CASCADE)
+    code = models.CharField(max_length=100)  # e.g. 'amount', 'quantity', 'cost_per_mm'
+    label = models.CharField(max_length=100)
+    is_editable = models.BooleanField(default=True)
+    is_computed = models.BooleanField(default=False)
+    formula = models.TextField(blank=True)  # e.g. 'amount = quantity * rate'
 
 class PlanningLayoutYear(models.Model):
     """
@@ -201,7 +290,9 @@ class PlanningSession(models.Model):
     # Draft → Completed (owner) → Frozen (admin)
     class Status(models.TextChoices):
         DRAFT     = 'D','Draft'
+        FEEDBACK  = 'B','Return Back'
         COMPLETED = 'C','Completed'
+        REVIEW    = 'R','Review'
         FROZEN    = 'F','Frozen'
     status      = models.CharField(max_length=1,
                                    choices=Status.choices,
@@ -247,77 +338,172 @@ class DataRequest(models.Model):
     created_at  = models.DateTimeField(auto_now_add=True)
     def __str__(self): return f"{self.session} – {self.description or self.id}"
 
-
 class PlanningFact(models.Model):
     """
+    Core Models (EAV-style with fixed dimension FK)
     One “row” of plan data for a given DataRequest + Period.
-    Most plans have both Quantity and Amount; we surface them.
     """
-    request      = models.ForeignKey(DataRequest,
-                                     on_delete=models.PROTECT,
-                                     related_name='facts')
-    session      = models.ForeignKey(PlanningSession,
-                                     on_delete=models.CASCADE,
-                                     related_name='facts')
-    period       = models.CharField(max_length=10)     # '01','Q1','H1'
-    row_values   = models.JSONField(default=dict,
-                 help_text="Dynamic dims: {'OrgUnit':12,'Product':34}")
+    request     = models.ForeignKey(DataRequest, on_delete=models.PROTECT)
+    session     = models.ForeignKey(PlanningSession, on_delete=models.CASCADE)
+    version     = models.ForeignKey(Version, on_delete=models.PROTECT)
 
-    # ← First-class key-figures instead of value      = models.DecimalField(max_digits=18, decimal_places=2)
-    quantity     = models.DecimalField(max_digits=18, decimal_places=3,
-                                       default=0,
-                                       help_text="Planned quantity in quantity_uom")
-    quantity_uom = models.ForeignKey(UnitOfMeasure,
-                                     on_delete=models.PROTECT,
-                                     related_name='+',
-                                     null=True, blank=True)
-    amount       = models.DecimalField(max_digits=18, decimal_places=2,
-                                       default=0,
-                                       help_text="Planned amount in amount_uom")
-    amount_uom   = models.ForeignKey(UnitOfMeasure,
-                                     on_delete=models.PROTECT,
-                                     related_name='+',
-                                     null=True, blank=True)
+    year        = models.ForeignKey(Year, on_delete=models.PROTECT)
+    period      = models.ForeignKey(Period, on_delete=models.PROTECT)
+    
+    org_unit    = models.ForeignKey(OrgUnit, on_delete=models.PROTECT)
 
-    # ← Legacy generic slot, for any other key-figure
-    other_key_figure = models.CharField(max_length=100, blank=True)
-    other_value      = models.DecimalField(max_digits=18, decimal_places=2,
-                                           null=True, blank=True)
+    service   = models.ForeignKey(Service, null=True, blank=True, on_delete=models.PROTECT)
+    account   = models.ForeignKey(Account, null=True, blank=True, on_delete=models.PROTECT)
+
+    # Optional domain-specific dimensions
+    driver_refs = models.JSONField(default=dict, help_text="e.g. {'Position':123, 'SkillGroup':'Developer'}")
+
+    # Key figure
+    # key_figure  = models.CharField(max_length=100)  
+    key_figure  = models.ForeignKey(KeyFigure, on_delete=models.PROTECT)
+    value       = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    uom         = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name='+', null=True)   # allows multi-currency
+    ref_value   = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    ref_uom     = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name='+', null=True)
 
     class Meta:
-        unique_together = (
-            'request','period','other_key_figure','row_values'
-        )
+        unique_together = ('request', 'version', 'year', 'period', 'org_unit', 'service', 'account', 'key_figure', 'driver_refs')
+        indexes = [
+            models.Index(fields=['year', 'version', 'org_unit']),
+            models.Index(fields=['key_figure']),
+        ]
     def __str__(self):
-        return (f"{self.session} | {self.period} | "
-                f"Qty={self.quantity}{self.quantity_uom or ''}  "
-                f"Amt={self.amount}{self.amount_uom or ''}")
+        return f"{self.key_figure}={self.value} | {self.service} | {self.period} | {self.org_unit}"        
 
-    def get_amount_in(self, target_uom_code):
+    def get_value_in(self, target_uom_code):
         """
-        Return self.amount converted into the unit target_uom_code.
+        Return self.value converted into the unit target_uom_code.
         """
-        if not self.amount_uom:
+        if not self.uom:
             return None
-        if self.amount_uom.code == target_uom_code:
-            return self.amount
+        if self.uom.code == target_uom_code:
+            return self.value
         to_uom = UnitOfMeasure.objects.get(code=target_uom_code, is_base=True)
         rate  = ConversionRate.objects.get(
-            from_uom=self.amount_uom,
+            from_uom=self.uom,
             to_uom=to_uom
         ).factor
-        return round(self.amount * rate, 2)
+        return round(self.value * rate, 2)
     
 class PlanningFunction(models.Model):
     FUNCTION_CHOICES = [
         ('COPY', 'Copy'),
         ('DISTRIBUTE', 'Distribute'),
-        ('REVALUE', 'Revalue'),
-        ('AGGREGATE', 'Aggregate'),
+        ('CURRENCY_CONVERT', 'Currency Convert'),        
     ]
-    name = models.CharField(max_length=50)
+    layout      = models.ForeignKey(PlanningLayout, on_delete=models.CASCADE)
+    name        = models.CharField(max_length=50)
     function_type = models.CharField(choices=FUNCTION_CHOICES, max_length=20)
-    parameters = models.JSONField(default=dict)    
+    parameters   = models.JSONField(
+        default=dict,
+        help_text="""
+            COPY: { "from_version": <vid>, "to_version": <vid>, "year":<y>, "period":"01" }  
+            DISTRIBUTE: { "by":"OrgUnit", "reference_data":"2024 Actuals" }  
+            CURRENCY_CONVERT: { "target_uom":"USD" }
+        """
+    )
+    def execute(self, session):
+        """
+        Dispatch to the correct implementation.
+        """
+        if self.function_type == 'COPY':
+            return self._copy_data(session)
+        if self.function_type == 'DISTRIBUTE':
+            return self._distribute(session)
+        if self.function_type == 'CURRENCY_CONVERT':
+            return self._currency_convert(session)
+
+    def _copy_data(self, session):
+        """
+        Copy facts from one version→another (or actual→plan).
+        """
+        from bps.models import PlanningFact
+        src_vid = self.parameters['from_version']
+        tgt_vid = self.parameters['to_version']
+        year    = self.parameters.get('year')
+        period  = self.parameters.get('period')
+        src_facts = PlanningFact.objects.filter(
+            session__layout_year__version_id=src_vid,
+            session=session,
+            year_id=year,
+            period=period
+        )
+        created = 0
+        for f in src_facts:
+            f.pk = None  # clone
+            f.request = None
+            f.session.layout_year.version_id = tgt_vid
+            f.save()
+            created += 1
+        return created
+
+    def _distribute(self, session):
+        """
+        Top-down distribute session-level totals to row-dim values
+        by reference data proportions.
+        """
+        from bps.models import PlanningFact, ReferenceData
+        by = self.parameters['by']             # e.g. "OrgUnit"
+        ref_name = self.parameters['reference_data']
+        ref = ReferenceData.objects.get(name=ref_name)
+        # for each period / keyfigure
+        total = ref.fetch_reference_fact(**{by: None})['value__sum'] or 0
+        if total == 0:
+            return 0
+        # determine proportions
+        qs = PlanningFact.objects.filter(session=session)
+        created = 0
+        for f in qs:
+            share = f.value / total
+            f.value = share * total
+            f.save()
+            created += 1
+        return created
+
+    def _currency_convert(self, session):
+        """
+        Revalue all facts to a new UoM using ConversionRate table.
+        """
+        from bps.models import PlanningFact, ConversionRate, UnitOfMeasure
+        tgt = self.parameters['target_uom']
+        tgt_uom = UnitOfMeasure.objects.get(code=tgt)
+        conv_map = {
+          (c.from_uom_id, c.to_uom_id): c.factor
+          for c in ConversionRate.objects.filter(to_uom=tgt_uom)
+        }
+        updated = 0
+        for f in PlanningFact.objects.filter(session=session):
+            key = (f.uom_id, tgt_uom.id)
+            if key not in conv_map: continue
+            f.value = round(f.value * conv_map[key], 4)
+            f.uom = tgt_uom
+            f.save()
+            updated += 1
+        return updated
+
+
+
+class ReferenceData(models.Model):
+    """
+    Example:
+    [Year=2025]?.[Revenue] = REF('2024 Actuals', OrgUnit=$OrgUnit)?.[Revenue] * (1 + INFLATION)
+    """
+    name = models.CharField(max_length=100)
+    source_version = models.ForeignKey('Version', on_delete=models.CASCADE)
+    source_year = models.ForeignKey('Year', on_delete=models.CASCADE)
+    description = models.TextField(blank=True)
+    
+    def fetch_reference_fact(self, **filters):
+        return PlanningFact.objects.filter(
+            session__layout_year__version=self.source_version,
+            session__layout_year__year=self.source_year,
+            **filters
+        ).aggregate(Sum('value'))
 
 class GlobalVariable(models.Model):
     name = models.CharField(max_length=100, unique=True)
@@ -339,34 +525,61 @@ class SubFormula(models.Model):
     """
     A reusable sub‐expression fragment, referenced in formulas via $NAME.
     """
-    name       = models.CharField(max_length=100, unique=True)
+    name = models.CharField(max_length=100)
+    layout = models.ForeignKey(PlanningLayout, on_delete=models.CASCADE, related_name='subformulas')
     expression = models.TextField(
-        help_text="Expression using other constants/sub‐formulas, e.g. [Year=2025]?.[Qty] * TAX_RATE"
+        help_text="Expression using other constants/sub-formulas, e.g. [Year=2025]?.[Qty] * TAX_RATE"
     )
 
-    def __str__(self):
-        return self.name
+    class Meta:
+        unique_together = ('layout', 'name')
 
+    def __str__(self):
+        return f"{self.name} ({self.layout})"
+
+
+# class Formula(models.Model):
+#     """
+#     A full formula. loop_dimension tells Executor which dimension to iterate.
+#     Expression syntax:  [Dim=val,…]?.[Key] = <arithmetic with [..]?.[..], $SUB, CONSTANT>
+#     """
+#     name = models.CharField(max_length=100)
+#     layout = models.ForeignKey(PlanningLayout, on_delete=models.CASCADE, related_name='formulas')
+#     loop_dimension = models.ForeignKey(
+#         ContentType,
+#         on_delete=models.CASCADE,
+#         help_text="InfoObject (e.g. Product) to loop over"
+#     )
+#     expression = models.TextField(
+#         help_text="e.g. [OrgUnit=12,Product=$LOOP]?.[amount] = [..]?.[quantity] * $RATE"
+#     )
+
+#     class Meta:
+#         unique_together = ('layout', 'name')
+
+#     def __str__(self):
+#         return f"{self.name} ({self.layout})"
 
 class Formula(models.Model):
     """
-    A full formula. loop_dimension tells Executor which dimension to iterate.
-    Expression syntax:  [Dim=val,…]?.[Key] = <arithmetic with [..]?.[..], $SUB, CONSTANT>
+    Example:
+    FOREACH OrgUnit, Product:
+        [Year=2025,OrgUnit=$OrgUnit,Product=$Product]?.[Revenue] =
+            IF EXISTS([Year=2024,OrgUnit=$OrgUnit,Product=$Product]?.[ActualRevenue]) THEN
+            [Year=2024,OrgUnit=$OrgUnit,Product=$Product]?.[ActualRevenue] * (1 + GROWTH_RATE)
+            ELSE
+            DEFAULT_REVENUE
     """
-    name           = models.CharField(max_length=100, unique=True)
-    loop_dimension = models.ForeignKey(
-        ContentType,
-        on_delete=models.CASCADE,
-        help_text="InfoObject (e.g. Product) to loop over"
-    )
-    expression     = models.TextField(
-        help_text="e.g. [OrgUnit=12,Product=$LOOP]?.[amount] = [..]?.[quantity] * $RATE"
-    )
-
+    layout = models.ForeignKey(PlanningLayout, on_delete=models.CASCADE)
+    name = models.CharField(max_length=100)
+    expression = models.TextField(help_text="Supports conditional logic, loops, and aggregation.")
+    dimensions = models.ManyToManyField(ContentType, help_text="Multiple dimensions for looping")
+    reference_version = models.ForeignKey('Version', null=True, blank=True, on_delete=models.SET_NULL)
+    reference_year = models.ForeignKey('Year', null=True, blank=True, on_delete=models.SET_NULL)
+    
     def __str__(self):
-        return self.name
-
-
+        return f"{self.name} ({self.layout})"
+    
 class FormulaRun(models.Model):
     """
     Audit of a single formula execution.

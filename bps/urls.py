@@ -25,6 +25,11 @@ urlpatterns = [
     path('formulas/', views.formula_list, name='formula_list'),
     path('formulas/run/<int:pk>/', views.formula_run, name='formula_run'),
 
+    path('functions/run/<int:pk>/', views.run_planning_function, name='run_function'),
+    path('functions/',            views.planning_function_list,  name='planning_function_list'),
+    path('functions/run/<int:pk>/<int:session_id>/', views.run_planning_function, name='run_function'),
+    path('reference-data/',       views.reference_data_list,     name='reference_data_list'),
+
     # Data Requests & Facts
     path('data-requests/', views.data_request_list, name='data_request_list'),
     path('data-requests/<uuid:pk>/', views.data_request_detail, name='data_request_detail'),
@@ -38,6 +43,7 @@ urlpatterns = [
     path('sessions/<int:pk>/', views.session_detail, name='session_detail'),
 
     # Autocomplete endpoints
+    path('autocomplete/layout/',    LayoutAutocomplete.as_view(), name='layout-autocomplete'),
     path('autocomplete/contenttype/', ContentTypeAutocomplete.as_view(), name='contenttype-autocomplete'),
     path('autocomplete/year/',         YearAutocomplete.as_view(),         name='year-autocomplete'),
     path('autocomplete/period/',       PeriodAutocomplete.as_view(),       name='period-autocomplete'),

@@ -1,0 +1,142 @@
+from uuid import uuid4
+from decimal import Decimal
+from django.test import TestCase
+from django.contrib.contenttypes.models import ContentType
+
+from bps.models import (
+    Year, Version,
+    OrgUnit, PlanningLayout, PlanningLayoutYear,
+    PlanningSession, DataRequest, PlanningFact,
+    UnitOfMeasure, ConversionRate,
+    Constant, SubFormula, Formula,
+    FormulaRun
+)
+from bps.formula_executor import FormulaExecutor
+
+
+class FormulaExecutorTest(TestCase):
+    def setUp(self):
+        self.year = Year.objects.create(code='2025', name='2025', order=0)
+        self.version = Version.objects.create(code='V1', name='Version 1', order=0)
+        self.layout = PlanningLayout.objects.create(name='TestLayout', key_figures=[])
+        self.layout_year = PlanningLayoutYear.objects.create(
+            layout=self.layout, year=self.year, version=self.version
+        )
+        self.org_unit = OrgUnit.objects.create(code='OUA', name='OrgUnit A', order=0)
+        self.session = PlanningSession.objects.create(
+            layout_year=self.layout_year, org_unit=self.org_unit, status='D'
+        )
+        self.data_request = DataRequest.objects.create(
+            session=self.session, description="Test Request"
+        )
+
+        self.uom_usd = UnitOfMeasure.objects.create(code='USD', name='US Dollar', is_base=True)
+        self.uom_ea = UnitOfMeasure.objects.create(code='EA', name='Each', is_base=False)
+
+        ConversionRate.objects.create(from_uom=self.uom_ea, to_uom=self.uom_usd, factor=Decimal('10'))
+
+        Constant.objects.create(name='TAX_RATE', value=Decimal('0.15'))
+
+        SubFormula.objects.create(
+            name='PRICE_WITH_TAX',
+            expression='[OrgUnit=$LOOP]?.[amount] * (1 + TAX_RATE)',
+            layout=self.layout  # ← re-added layout here
+        )
+
+        ct = ContentType.objects.get_for_model(OrgUnit)
+        self.formula = Formula.objects.create(
+            layout=self.layout,  # ← re-added layout here
+            loop_dimension=ct,
+            expression='[OrgUnit=$LOOP]?.[amount] = $PRICE_WITH_TAX'
+        )
+
+        PlanningFact.objects.create(
+            request=self.data_request,
+            session=self.session,
+            period='01',
+            row_values={'OrgUnit': self.org_unit.pk},
+            amount=Decimal('100'),
+            amount_uom=self.uom_usd,
+            quantity=Decimal('10'),
+            quantity_uom=self.uom_ea
+        )
+        
+    def test_formula_execution(self):
+        executor = FormulaExecutor(self.formula, self.session, period='01', preview=False)
+        entries = executor.execute()
+
+        # a) A FormulaRun was created
+        run = FormulaRun.objects.get(formula=self.formula)
+        self.assertFalse(run.preview)
+
+        # b) One entry
+        self.assertEqual(entries.count(), 1)
+        entry = entries.first()
+
+        # c) Old/new values
+        self.assertEqual(entry.old_value, Decimal('100'))
+        self.assertEqual(entry.new_value, Decimal('115.0000'))
+
+        # d) PlanningFact updated
+        fact = PlanningFact.objects.get(
+            session=self.session,
+            period='01',
+            row_values={'OrgUnit': self.org_unit.pk}
+        )
+        self.assertEqual(fact.amount, Decimal('115.0000'))
+        self.assertEqual(fact.amount_uom, self.uom_usd)
+
+    def test_uom_conversion(self):
+        fact = PlanningFact.objects.first()
+        rate = ConversionRate.objects.get(from_uom=self.uom_ea, to_uom=self.uom_usd).factor
+        self.assertEqual(fact.quantity * rate, Decimal('100'))
+
+    def test_missing_fact_creation(self):
+        formula2 = Formula.objects.create(
+            loop_dimension=ContentType.objects.get_for_model(OrgUnit),
+            expression='[OrgUnit=$LOOP]?.[amount] = 50'
+        )
+        executor = FormulaExecutor(formula2, self.session, period='01', preview=False)
+        entries = executor.execute()
+
+        # New fact should exist
+        fact = PlanningFact.objects.get(
+            session=self.session,
+            period='01',
+            row_values={'OrgUnit': self.org_unit.pk}
+        )
+        self.assertEqual(fact.amount, Decimal('50'))
+
+        entry = entries.first()
+        self.assertEqual(entry.old_value, 0)
+        self.assertEqual(entry.new_value, Decimal('50'))
+
+    def test_preview_mode_does_not_persist(self):
+        executor = FormulaExecutor(self.formula, self.session, period='01', preview=True)
+        entries = executor.execute()
+
+        fact = PlanningFact.objects.get(
+            session=self.session,
+            period='01',
+            row_values={'OrgUnit': self.org_unit.pk}
+        )
+        self.assertEqual(fact.amount, Decimal('100'))  # unchanged
+
+        entry = entries.first()
+        self.assertEqual(entry.old_value, Decimal('100'))
+        self.assertEqual(entry.new_value, Decimal('115.0000'))
+
+    def test_safe_eval_complex_expr(self):
+        expr = '((10 + 5) * 2 - 4) / 2 ** 2'
+        executor = FormulaExecutor(self.formula, self.session, period='01')
+        result = executor._safe_eval(expr)
+        self.assertEqual(result, Decimal('3.7500'))
+
+    def test_missing_constant_raises(self):
+        formula3 = Formula.objects.create(
+            loop_dimension=ContentType.objects.get_for_model(OrgUnit),
+            expression='[OrgUnit=$LOOP]?.[amount] = UNKNOWN_CONST'
+        )
+        executor = FormulaExecutor(formula3, self.session, period='01')
+        with self.assertRaises(Constant.DoesNotExist):
+            executor.execute()

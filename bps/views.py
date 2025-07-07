@@ -3,14 +3,18 @@ from uuid import UUID
 from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib import messages
 from django.urls import reverse
+from django.utils import timezone
 
 from .models import (
     Year, PlanningLayoutYear, 
-    PlanningSession, DataRequest, PlanningFact,
+    PlanningSession, PlanningFunction, ReferenceData, DataRequest, PlanningFact,
     PeriodGrouping,
     Constant, SubFormula, Formula, FormulaRun
 )
-from .forms  import PlanningSessionForm, PeriodSelector, ConstantForm, SubFormulaForm, FormulaForm
+from .forms  import (
+    PlanningSessionForm, PeriodSelector, ConstantForm, SubFormulaForm,
+    FormulaForm, FactForm, PlanningFunctionForm, ReferenceDataForm
+)
 from .formula_executor import FormulaExecutor
 from django.forms import modelform_factory
 
@@ -160,6 +164,46 @@ def formula_run(request, pk):
     messages.success(request, f"Executed {formula.name}, {entries.count()} entries updated.")
     return redirect(reverse('formula_list'))
 
+# ── Planning Functions ─────────────────────────────────────────────────────
+def planning_function_list(request):
+    if request.method == 'POST':
+        form = PlanningFunctionForm(request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Planning Function saved.")
+            return redirect('bps:planning_function_list')
+    else:
+        form = PlanningFunctionForm()
+    functions = PlanningFunction.objects.all()
+    return render(request, 'bps/planning_function_list.html', {
+        'form': form, 'functions': functions
+    })
+
+def run_planning_function(request, pk, session_id):
+    func = get_object_or_404(PlanningFunction, pk=pk)
+    session = get_object_or_404(PlanningSession, pk=session_id)
+    result = func.execute(session)
+    messages.success(
+        request,
+        f"{func.get_function_type_display()} executed, result: {result}"
+    )
+    return redirect('bps:session_detail', pk=session_id)
+
+# ── Reference Data ─────────────────────────────────────────────────────────
+def reference_data_list(request):
+    if request.method == 'POST':
+        form = ReferenceDataForm(request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Reference Data saved.")
+            return redirect('bps:reference_data_list')
+    else:
+        form = ReferenceDataForm()
+    refs = ReferenceData.objects.all()
+    return render(request, 'bps/reference_data_list.html', {
+        'form': form, 'references': refs
+    })
+
 # If you need a simple ModelForm for DataRequest:
 DataRequestForm = modelform_factory(DataRequest, fields=['description'])
 
@@ -198,11 +242,7 @@ def data_request_detail(request, pk: UUID):
 
 
 def fact_list(request, request_id: UUID):
-    """
-    Add / list PlanningFact rows for a given DataRequest.
-    """
     dr = get_object_or_404(DataRequest, pk=request_id)
-
     if request.method == 'POST':
         form = FactForm(request.POST)
         if form.is_valid():
@@ -214,12 +254,9 @@ def fact_list(request, request_id: UUID):
             return redirect("bps:fact_list", request_id=request_id)
     else:
         form = FactForm()
-
     facts = dr.facts.order_by('period')
     return render(request, "bps/fact_list.html", {
-        "dr": dr,
-        "form": form,
-        "facts": facts,
+        "dr": dr, "form": form, "facts": facts
     })
 
 
@@ -241,3 +278,16 @@ def variable_list(request):
         "form": form,
         "consts": consts,
     })
+
+def run_planning_function(request, pk, session_id):
+    """
+    URL: /functions/run/<pk>/?session=<sid>
+    """
+    func = get_object_or_404(PlanningFunction, pk=pk)
+    session = get_object_or_404(PlanningSession, pk=session_id)
+    count_or_result = func.execute(session)
+    messages.success(
+        request,
+        f"{func.get_function_type_display()} executed, result: {count_or_result}"
+    )
+    return redirect('bps:session_detail', pk=session_id)

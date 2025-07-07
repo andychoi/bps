@@ -1,40 +1,29 @@
 # bps/forms.py
-
 from django import forms
 from crispy_forms.helper import FormHelper
-from crispy_forms.layout import Layout, Row, Column, Field, Submit
-from dal_select2.widgets import ModelSelect2, ModelSelect2Multiple
+from crispy_forms.layout import Layout, Row, Column, Submit
+from dal_select2.widgets import ModelSelect2
 from django.contrib.contenttypes.models import ContentType
 from .models import (
-    Constant, SubFormula, Formula,
+    Constant, SubFormula, Formula, PlanningFunction, ReferenceData,
     PlanningLayoutYear, PeriodGrouping, PlanningSession,
     DataRequest, PlanningFact, Year, Version, OrgUnit
 )
-
 
 class FactForm(forms.ModelForm):
     class Meta:
         model = PlanningFact
         fields = [
-            'session',
-            'period',
-            'quantity', 'quantity_uom',
-            'amount', 'amount_uom',
-            'other_key_figure', 'other_value',
+            'service', 'account', 'driver_refs',
+            'key_figure', 'value', 'uom',
+            'ref_value', 'ref_uom'
         ]
         widgets = {
-            'session': ModelSelect2(
-                url='bps:layoutyear-autocomplete'
-            ),
-            'period': ModelSelect2(
-                url='bps:period-autocomplete'
-            ),
-            'quantity_uom': ModelSelect2(
-                url='bps:uom-autocomplete'
-            ),
-            'amount_uom': ModelSelect2(
-                url='bps:uom-autocomplete'
-            ),
+            'service': ModelSelect2(url='bps:service-autocomplete'),
+            'account': ModelSelect2(url='bps:account-autocomplete'),
+            'key_figure': ModelSelect2(url='bps:keyfigure-autocomplete'),
+            'uom': ModelSelect2(url='bps:uom-autocomplete'),
+            'ref_uom': ModelSelect2(url='bps:uom-autocomplete'),
         }
 
     def __init__(self, *args, **kwargs):
@@ -42,20 +31,21 @@ class FactForm(forms.ModelForm):
         self.helper = FormHelper(self)
         self.helper.layout = Layout(
             Row(
-                Column('session', css_class='col-md-4'),
-                Column('period',  css_class='col-md-2'),
-                Column('quantity',     css_class='col-md-2'),
-                Column('quantity_uom', css_class='col-md-2'),
-                Column('amount',       css_class='col-md-2'),
-                Column('amount_uom',   css_class='col-md-2'),
+                Column('service',   css_class='col-md-4'),
+                Column('account',   css_class='col-md-4'),
+                Column('driver_refs', css_class='col-md-4'),
             ),
             Row(
-                Column('other_key_figure', css_class='col-md-4'),
-                Column('other_value',      css_class='col-md-4'),
+                Column('key_figure', css_class='col-md-4'),
+                Column('value',      css_class='col-md-4'),
+                Column('uom',        css_class='col-md-4'),
             ),
-            Submit('save','Save Fact')
+            Row(
+                Column('ref_value', css_class='col-md-4'),
+                Column('ref_uom',   css_class='col-md-4'),
+            ),
+            Submit('save', 'Save Fact')
         )
-
 
 class ConstantForm(forms.ModelForm):
     class Meta:
@@ -73,38 +63,87 @@ class ConstantForm(forms.ModelForm):
 class SubFormulaForm(forms.ModelForm):
     class Meta:
         model = SubFormula
-        fields = ['name', 'expression']
-        widgets = {'expression': forms.Textarea(attrs={'rows':3})}
+        fields = ['layout', 'name', 'expression']
+        widgets = {
+            'layout': ModelSelect2(url='bps:layout-autocomplete'),
+            'expression': forms.Textarea(attrs={'rows':3})
+        }
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.helper = FormHelper(self)
         self.helper.layout = Layout(
-            'name', 'expression',
-            Submit('save','Save Sub-Formula')
+            Row(Column('layout', css_class='col-md-4'),
+                Column('name', css_class='col-md-4')),
+            'expression',
+            Submit('save', 'Save Sub-Formula')
         )
 
 
 class FormulaForm(forms.ModelForm):
     loop_dimension = forms.ModelChoiceField(
         queryset=ContentType.objects.all(),
-        widget=ModelSelect2(
-            url='bps:contenttype-autocomplete'
-        )
+        widget=ModelSelect2(url='bps:contenttype-autocomplete')
     )
+
     class Meta:
         model = Formula
-        fields = ['name', 'loop_dimension', 'expression']
+        fields = ['layout', 'name', 'loop_dimension', 'expression']
         widgets = {
+            'layout': ModelSelect2(url='bps:layout-autocomplete'),
             'expression': forms.Textarea(attrs={'rows':4}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper(self)
+        self.helper.layout = Layout(
+            Row(Column('layout', css_class='col-md-4'),
+                Column('name', css_class='col-md-4')),
+            'loop_dimension',
+            'expression',
+            Submit('save', 'Save Formula')
+        )
+
+# ── Planning Functions ─────────────────────────────────────────────────────
+class PlanningFunctionForm(forms.ModelForm):
+    class Meta:
+        model = PlanningFunction
+        fields = ['layout', 'name', 'function_type', 'parameters']
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper(self)
+        self.helper.layout = Layout(
+            Row(
+                Column('layout', css_class='col-md-4'),
+                Column('name', css_class='col-md-4'),
+                Column('function_type', css_class='col-md-4'),
+            ),
+            'parameters',
+            Submit('save','Save Function')
+        )
+
+# ── Reference Data ─────────────────────────────────────────────────────────
+class ReferenceDataForm(forms.ModelForm):
+    class Meta:
+        model = ReferenceData
+        fields = ['name', 'source_version', 'source_year', 'description']
+        widgets = {
+            'source_version': ModelSelect2(url='bps:version-autocomplete'),
+            'source_year'   : ModelSelect2(url='bps:year-autocomplete'),
         }
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.helper = FormHelper(self)
         self.helper.layout = Layout(
-            'name', 'loop_dimension', 'expression',
-            Submit('save','Save Formula')
+            Row(
+                Column('name', css_class='col-md-4'),
+                Column('source_version', css_class='col-md-4'),
+                Column('source_year', css_class='col-md-4'),
+            ),
+            'description',
+            Submit('save','Save Reference')
         )
-
 # ── A. Session Form ────────────────────────────────────────────────────────
 
 class PlanningSessionForm(forms.ModelForm):
@@ -143,17 +182,3 @@ class PeriodSelector(forms.Form):
 
 # ── C. FactField config–driven form omitted for brevity ────────────────────
 #    (Use the FactField / DynamicFactForm pattern from previous example)
-
-class PlanningFactForm(forms.ModelForm):
-    class Meta:
-        model = PlanningFact
-        fields = [
-          'period','quantity','quantity_uom',
-          'amount','amount_uom',
-          'other_key_figure','other_value',
-        ]
-        widgets = {
-          'period': forms.TextInput(attrs={'placeholder':'01, Q1, H1'}),
-          'quantity_uom': ModelSelect2(url='uom-autocomplete'),
-          'amount_uom':   ModelSelect2(url='uom-autocomplete'),
-        }

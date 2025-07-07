@@ -6,6 +6,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.db.models import Q
 
 from .models import (
+    PlanningLayout,
     Year,
     Period,
     OrgUnit,
@@ -16,7 +17,13 @@ from .models import (
     PlanningLayoutYear,
 )
 
-
+class LayoutAutocomplete(Select2QuerySetView):
+    def get_queryset(self):
+        qs = PlanningLayout.objects.all()
+        if self.q:
+            qs = qs.filter(name__icontains=self.q)
+        return qs
+    
 class ContentTypeAutocomplete(Select2QuerySetView):
     """
     Autocomplete for Django ContentType objects.
