@@ -1,0 +1,73 @@
+{% extends "bps/base.html" %}
+{% block content %}
+  <h3>Manual Planning: {{ layout_year.layout.name }} – {{ layout_year.year.code }} / {{ layout_year.version.code }}</h3>
+  <div class="mb-2">
+    <button class="btn btn-success" onclick="saveGrid()">💾 Save</button>
+    <button class="btn btn-warning" onclick="reverseChanges()">⏪ Revert</button>
+    <button class="btn btn-outline-secondary" onclick="exportGrid()">📤 Export</button>
+  </div>
+  <div id="planning-grid"></div>
+{% endblock %}
+
+{% block extra_js %}
+<link href="https://unpkg.com/tabulator-tables@6.3.0/dist/css/tabulator.min.css" rel="stylesheet"/>
+<script src="https://unpkg.com/tabulator-tables@6.3.0/dist/js/tabulator.min.js"></script>
+<script>
+  const layoutId  = {{ layout_year.id }};
+  const yearId    = {{ layout_year.year.id }};
+  const versionId = {{ layout_year.version.id }};
+  let changes = [], table;
+
+  document.addEventListener("DOMContentLoaded", ()=>{
+    table = new Tabulator("#planning-grid", {
+      height: "600px",
+      layout: "fitDataStretch",
+      ajaxURL: `/api/bps_planning_pivot?layout=${layoutId}&version=${versionId}`,
+      columns: [
+        { title:"Org Unit",   field:"org_unit", frozen:true  },
+        { title:"Service",    field:"service",  frozen:true  },
+        { title:"Key Figure", field:"key_figure",frozen:true },
+        {% for p in periods %}
+          { title:"{{ p.name }}", field:"{{ p.name }}", editor:"number", bottomCalc:"sum" },
+        {% endfor %}
+      ],
+      cellEdited: (cell)=>{
+        let row = cell.getRow().getData();
+        changes.push({
+          org_unit:   row.org_unit,
+          service:    row.service,
+          key_figure: row.key_figure,
+          period:     cell.getColumn().getField(),
+          value:      cell.getValue(),
+        });
+      }
+    });
+  });
+
+  function saveGrid(){
+    if(!changes.length) return alert("Nothing to save");
+    fetch("/api/bps_planning_grid_update/", {
+      method: "PATCH",
+      credentials: "include",
+      headers: {
+        "Content-Type":"application/json",
+        "X-CSRFToken":"{{ csrf_token }}",
+      },
+      body: JSON.stringify({updates:changes})
+    }).then(r=>{
+      if(r.ok){
+        alert("Saved!");
+        changes = [];
+        table.replaceData();
+      }
+    });
+  }
+  function reverseChanges(){
+    if(confirm("Revert unsaved?")){
+      changes=[];
+      table.replaceData();
+    }
+  }
+  function exportGrid(){ table.download("csv","planning.csv"); }
+</script>
+{% endblock %}

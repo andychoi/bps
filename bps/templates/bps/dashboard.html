@@ -78,6 +78,10 @@
         <div class="card-header bg-success text-white">Planning Functions</div>
         <div class="card-body">
           <div class="list-group">
+            <a href="{% url 'bps:manual-planning-select' %}" class="list-group-item list-group-item-action">
+              🧮 Manual Planning Grid
+            </a>
+
             {% for fn in planning_funcs %}
               <a href="{{ fn.url }}" class="list-group-item list-group-item-action">
                 {{ fn.name }}

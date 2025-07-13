@@ -111,7 +111,7 @@
             "type": "python",
             "request": "launch",
             "program": "${workspaceFolder}/manage.py",
-            "args": ["runserver","8000","--noreload"],
+            "args": ["runserver","8000"],
             "console": "integratedTerminal",
             "justMyCode": true,
             "subProcess": true,

@@ -1,0 +1,22 @@
+{# manual_planning_select.html #}
+{% extends "bps/base.html" %}
+{% block content %}
+<h2>Launch Manual Planning</h2>
+<form method="get" action="{% url 'bps:manual-planning-select' %}">
+  <select name="layout_id">
+    {% for ly in layouts %}
+      <option value="{{ ly.layout.id }}|{{ ly.year.id }}|{{ ly.version.id }}">
+        {{ ly.layout.name }} – {{ ly.year.code }} / {{ ly.version.code }}
+      </option>
+    {% endfor %}
+  </select>
+  <button class="btn btn-primary">Go</button>
+</form>
+{% endblock %}
+<script>
+document.querySelector("form").addEventListener("submit", e=>{
+  e.preventDefault();
+  let val = e.target.layout_id.value.split("|");
+  window.location = `/planning/manual/${val[0]}/${val[1]}/${val[2]}/`;
+});
+</script>

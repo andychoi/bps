@@ -1,0 +1,40 @@
+{% extends "bps/base.html" %}
+{% load crispy_forms_tags %}
+{% block content %}
+<div class="container my-4">
+  <h1>Planning Functions</h1>
+
+  <form method="post" class="mb-4">{% csrf_token %}
+    {{ form|crispy }}
+  </form>
+
+  <table class="table table-striped">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Layout</th>
+        <th>Type</th>
+        <th>Parameters (JSON)</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for fn in functions %}
+      <tr>
+        <td>{{ fn.name }}</td>
+        <td>{{ fn.layout.code }}</td>
+        <td>{{ fn.get_function_type_display }}</td>
+        <td><code>{{ fn.parameters }}</code></td>
+        <td>
+          <a href="{% url 'bps:run_function' fn.pk sess_id=fn.pk %}" class="btn btn-sm btn-primary">
+            Run
+          </a>
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="5">No planning functions defined.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

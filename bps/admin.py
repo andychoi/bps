@@ -178,25 +178,25 @@ class PlanningFactAdmin(admin.ModelAdmin):
 
 @admin.register(Position)
 class PositionAdmin(admin.ModelAdmin):
-    list_display = ('year', 'code', 'skill_group', 'level', 'fte', 'is_open')
-    list_filter = ('year', 'skill_group', 'level', 'is_open')
-    search_fields = ('code', 'skill_group', 'level')
-    ordering = ('year__code', 'skill_group', 'level', 'code')
+    list_display = ('year', 'code', 'skill', 'level', 'fte', 'is_open')
+    list_filter = ('year', 'skill', 'level', 'is_open')
+    search_fields = ('code', 'skill', 'level')
+    ordering = ('year__code', 'skill', 'level', 'code')
     fieldsets = (
         (None, {
-            'fields': ('year', 'code', 'name', 'skill_group', 'level', 'fte', 'is_open')
+            'fields': ('year', 'code', 'name', 'skill', 'level', 'fte', 'is_open')
         }),
     )
 
 
 @admin.register(RateCard)
 class RateCardAdmin(admin.ModelAdmin):
-    list_display = ('year', 'skill_group', 'vendor_type', 'country', 'efficiency_factor', 'hourly_rate')
-    list_filter = ('year', 'skill_group', 'vendor_type', 'country')
-    search_fields = ('skill_group', 'country', 'vendor_type')
-    ordering = ('year__code', 'skill_group', 'vendor_type', 'country')
+    list_display = ('year', 'skill', 'resource_type', 'country', 'efficiency_factor', 'hourly_rate')
+    list_filter = ('year', 'skill', 'resource_type', 'country')
+    search_fields = ('skill', 'country', 'resource_type')
+    ordering = ('year__code', 'skill', 'resource_type', 'country')
     fieldsets = (
         (None, {
-            'fields': ('year', 'skill_group', 'vendor_type', 'country', 'efficiency_factor', 'hourly_rate')
+            'fields': ('year', 'skill', 'resource_type', 'country', 'efficiency_factor', 'hourly_rate')
         }),
     )

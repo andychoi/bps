@@ -4,11 +4,14 @@ from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib import messages
 from django.urls import reverse
 from django.utils import timezone
-
+from django.views.generic import TemplateView
+from bps.models import PlanningLayout, Year, Version
+from bps.models import Period
 from .models import (
     Year, PlanningLayoutYear, 
     PlanningSession, PlanningFunction, ReferenceData, DataRequest, PlanningFact,
     PeriodGrouping,
+    PlanningLayout,
     Constant, SubFormula, Formula, FormulaRun
 )
 from .forms  import (
@@ -101,6 +104,43 @@ def dashboard(request):
         'admin_links': admin_links,
     })
 
+def manual_planning(request):
+    """
+    Show a dropdown of available planning layouts,
+    then load the Tabulator grid for the selected one.
+    """
+    if request.method == "POST":
+        layout_id = request.POST.get("layout")
+        return redirect(f"{reverse('bps:planning_grid')}?layout={layout_id}")
+
+    layouts = PlanningLayout.objects.filter(default=True)  # or however you pick
+    return render(request, "bps/manual_planning.html", {
+        "layouts": layouts
+    })
+
+
+class ManualPlanningSelectView(TemplateView):
+    template_name = "bps/manual_planning_select.html"
+    
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        ctx["layouts"]  = PlanningLayoutYear.objects.select_related("layout","year","version")
+        return ctx
+
+class ManualPlanningView(TemplateView):
+    template_name = "bps/manual_planning.html"
+
+    def get_context_data(self, layout_id, year_id, version_id, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        ctx["layout"] = layout = PlanningLayout.objects.get(id=layout_id)
+        ctx["year"] = year = Year.objects.get(id=year_id)
+        ctx["version"] = version = Version.objects.get(id=version_id)
+        ctx["layout_year"] = PlanningLayoutYear.objects.filter(
+            layout=layout, year=year, version=version
+        ).first()
+        ctx["periods"] = Period.objects.all().order_by("order")        
+        return ctx
+    
 def session_list(request):
     sessions = PlanningSession.objects.all().order_by('-created_at')
     return render(request,'bps/session_list.html',{'sessions':sessions})

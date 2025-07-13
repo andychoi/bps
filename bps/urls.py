@@ -1,6 +1,6 @@
 # bps/urls.py
 
-from django.urls import path
+from django.urls import path, include
 from django.contrib.contenttypes.models import ContentType
 from dal import autocomplete
 
@@ -11,6 +11,8 @@ from .models import (
     UnitOfMeasure, PlanningLayoutYear
 )
 
+from bps.views import ManualPlanningView, ManualPlanningSelectView
+
 app_name = "bps"
 
 urlpatterns = [
@@ -18,6 +20,14 @@ urlpatterns = [
     path('profile/', views.profile, name='profile'), 
     path('inbox/', views.inbox, name='inbox'), 
     path('notifications/', views.notifications, name='notifications'), 
+
+    # ** include the DRF API endpoints **
+    path("api/", include("bps.api.urls", namespace="bps_api")),
+
+    # manual planning
+    # path("manual-planning/", ManualPlanningView.as_view(), name="manual_planning"),
+    path('planning/manual/', views.ManualPlanningSelectView.as_view(), name='manual-planning-select'),
+    path('planning/manual/<int:layout_id>/<int:year_id>/<int:version_id>/', views.ManualPlanningView.as_view(), name='manual-planning'),
 
     # Constants
     path('constants/', views.constant_list, name='constant_list'),

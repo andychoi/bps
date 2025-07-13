@@ -20,7 +20,7 @@ from bps.models import (
 User = get_user_model()
 random.seed(42)
 
-SKILL_GROUPS = [
+SKILLS = [
     'Manager', 'Project Manager', 'Business Analyst', 'BSA',
     'Enterprise Architect', 'Solution Architect',
     'Developer', 'Data Engineer', 'QA Engineer', 'Test Analyst',
@@ -94,7 +94,7 @@ class Command(BaseCommand):
 
         # 5. Positions per year
         for y in years:
-            for sg in SKILL_GROUPS:
+            for sg in SKILLS:
                 for lvl in SENIORITY_LEVELS:
                     for open_flag in (False,True):
                         suffix=lvl[:1] + ('-OP' if open_flag else '')
@@ -102,7 +102,7 @@ class Command(BaseCommand):
                         Position.objects.get_or_create(
                             year=y, code=code,
                             defaults={'name':f"{sg} {lvl}{' (Open)' if open_flag else ''}",
-                                      'skill_group':sg,'level':lvl,'fte':1.0,'is_open':open_flag}
+                                      'skill':sg,'level':lvl,'fte':1.0,'is_open':open_flag}
                         )
         # assign users to 2025 filled
         filled=Position.objects.filter(year__code='2025',is_open=False)
@@ -111,11 +111,11 @@ class Command(BaseCommand):
 
         # 6. RateCards per year
         for y in years:
-            for sg in SKILL_GROUPS:
+            for sg in SKILLS:
                 for country in OUTSOURCING_COUNTRIES:
                     RateCard.objects.get_or_create(
-                        year=y,skill_group=sg,
-                        vendor_type=random.choice(['Contractor','MSP']),
+                        year=y,skill=sg,
+                        resource_type=random.choice(['Contractor','MSP']),
                         country=country,
                         defaults={'efficiency_factor':round(random.uniform(0.7,1.0),2),'hourly_rate':round(random.uniform(20,120),2)}
                     )

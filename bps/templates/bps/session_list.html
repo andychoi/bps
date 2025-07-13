@@ -1,0 +1,32 @@
+{% extends "bps/base.html" %}
+{% load static %}
+{% block content %}
+<div class="container my-4">
+  <h1>All Planning Sessions</h1>
+  <table class="table table-hover">
+    <thead>
+      <tr>
+        <th>Org Unit</th>
+        <th>Layout / Year • Version</th>
+        <th>Status</th>
+        <th>Created At</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for sess in sessions %}
+      <tr>
+        <td>
+          <a href="{% url 'bps:session_detail' sess.pk %}">
+            {{ sess.org_unit.name }}
+          </a>
+        </td>
+        <td>{{ sess.layout_year.layout.name }} / {{ sess.layout_year.year.code }} • {{ sess.layout_year.version.code }}</td>
+        <td>{{ sess.get_status_display }}</td>
+        <td>{{ sess.created_at|date:"Y-m-d H:i" }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="4">No sessions found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

@@ -1,15 +1,13 @@
-import environ
+import os
+import sys
 from pathlib import Path
+from environs import Env
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Initialize environment variables
-env = environ.Env(
-    DEBUG=(bool, False)
-)
-
-# Read .env file
-environ.Env.read_env(BASE_DIR / ".env")
+# Load environment variables
+env = Env()
+env.read_env()  # Read .env file, if it exists
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env.bool("DEBUG", default=False)
@@ -38,6 +36,7 @@ INSTALLED_APPS = [
 CRISPY_TEMPLATE_PACK = 'bootstrap5'    
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -65,6 +64,12 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "bpsproject.wsgi.application"
+
+CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", ["http://localhost", "http://localhost:5173",])
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[
+    "http://localhost:5173"
+])
 
 
 # Database
@@ -121,3 +126,11 @@ STATIC_URL = "static/"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# Static files (CSS, JavaScript, Images)
+STATIC_URL = '/static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'static')
+# during development time
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR, "bpsproject", "static"),
+]

@@ -6,9 +6,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Enterprise Planning{% endblock %}</title>
     <!-- Bootstrap 5 CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUa6mY5D6T+Ly2YbMkQZ6Yr6Y1YAd+0F6fqG5s5B5KRb8DXe6fVXMZV+fl1M" crossorigin="anonymous">
+    <link href="{% static 'css/bootstrap.min.css' %}" rel="stylesheet">
     <!-- Bootstrap Icons -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="{% static 'css/bootstrap-icons.css' %}" rel="stylesheet">
     <!-- Custom CSS -->
     <link href="{% static 'css/custom.css' %}" rel="stylesheet">
     <!-- <link
@@ -88,7 +88,7 @@
     </div>
 
     <!-- Bootstrap 5 JS Bundle -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-ENjdO4Dr2bkBIFxQpeo7F9LQG8Z1iQg9Ph2+Qx4U5Y0Q5h9vF3Vf5y2Q5y2qbi1" crossorigin="anonymous"></script>
+    <script src="{% static 'js/bootstrap.bundle.min.js' %}"></script>
     {% block extra_js %}{% endblock %}
 </body>
 </html>

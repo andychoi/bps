@@ -1,7 +1,7 @@
 django
 psycopg
 psycopg-binary==3.2.3
-django-environ
+environs~=14.2
 
 django-treebeard~=4.7.1
 
