@@ -138,9 +138,7 @@ class InternalOrder(InfoObject):
 class Skill(models.Model):
     name = models.CharField(max_length=50, unique=True)
     description = models.TextField(blank=True, null=True)
-
-    def __str__(self):
-        return self.name
+    def __str__(self): return self.name
 
 class RateCard(models.Model):
     """
@@ -148,42 +146,25 @@ class RateCard(models.Model):
     """
     RESOURCE_CHOICES = [('EMP', 'Employee'), ('CON','Contractor'), ('MSP','MSP')]
 
-    year              = models.ForeignKey(Year, on_delete=models.CASCADE)
     skill = models.ForeignKey(Skill, on_delete=models.PROTECT) # Use PROTECT to prevent deleting skills in use
     level             = models.CharField(max_length=20)      # e.g. Junior/Mid/Senior
     resource_type       = models.CharField(max_length=20, choices=RESOURCE_CHOICES)
     country           = models.CharField(max_length=50)
-    efficiency_factor = models.DecimalField(max_digits=5, decimal_places=2,
+    efficiency_factor = models.DecimalField(default=1.00, max_digits=5, decimal_places=2,
                                             help_text="0.00-1.00")
-    # This will now represent the *fully loaded* hourly rate for employees.
-    # For external resources, it's their billable hourly rate.
-    hourly_rate       = models.DecimalField(max_digits=10, decimal_places=2,
-                                            help_text="Fully loaded hourly rate (incl. salary, benefits, overhead for employees)")
-
-    # New fields for fully loaded costs (especially useful for 'EMP' resource_category)
-    # These could be optional or only populated for 'EMP' types.
-    base_salary_hourly_equiv = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True,
-                                                    help_text="Hourly equivalent of base salary/wage. Populated for Employees.")
-    benefits_hourly_equiv = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True,
-                                                    help_text="Hourly equivalent of benefits cost (health, retirement, PTO, etc.). Populated for Employees.")
-    payroll_tax_hourly_equiv = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True,
-                                                    help_text="Hourly equivalent of employer payroll taxes. Populated for Employees.")
-    overhead_allocation_hourly = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True,
-                                                    help_text="Hourly allocated overhead cost (e.g., office space, equipment, admin). Populated for Employees.")
-
-
     class Meta:
-        # Include resource_category in unique_together
-        unique_together = ('year', 'skill', 'level', 'resource_category', 'country')
-        ordering = ['year__code', 'skill', 'level', 'resource_category', 'country']
+        unique_together = ('skill','level','resource_category','country') # No 'year' here
+        ordering = ['skill','level','resource_category','country']
+        verbose_name = "Rate Card Template"
+        verbose_name_plural = "Rate Card Templates"
 
     def __str__(self):
-        rate_type_display = "Fully Loaded" if self.resource_category == 'EMP' else "Billable"
-        return (f"[{self.year.code}] {self.resource_category} | {self.skill} ({self.level}) @ "
-                f"{self.country}: {self.hourly_rate}$/h ({rate_type_display}), eff {self.efficiency_factor}")
-
+        return (f"{self.resource_category} | {self.skill} ({self.level}) @ "
+                f"{self.country}")
+    
     # You'll need logic (perhaps in a signal or a custom save method)
     # to calculate `hourly_rate` from its components for 'EMP' types.
+    """
     def save(self, *args, **kwargs):
         if self.resource_category == 'EMP':
             self.hourly_rate = (self.base_salary_hourly_equiv or 0) + \
@@ -191,45 +172,8 @@ class RateCard(models.Model):
                                (self.payroll_tax_hourly_equiv or 0) + \
                                (self.overhead_allocation_hourly or 0)
         super().save(*args, **kwargs)
+    """
 
-
-class Resource(models.Model):
-    # Common identifier for any individual being budgeted or assigned
-    unique_id = models.CharField(max_length=100, unique=True, help_text="Internal tracking ID for this resource.")
-    display_name = models.CharField(max_length=255)
-    resource_category = models.CharField(
-        max_length=20,
-        choices=RateCard.RESOURCE_CATEGORY_CHOICES,
-        help_text="Type of resource (Employee, Contractor, MSP Staff, etc.)"
-    )
-    # Links to the specific type of resource
-    employee = models.OneToOneField(Employee, on_delete=models.SET_NULL, null=True, blank=True)
-    contractor = models.OneToOneField(Contractor, on_delete=models.SET_NULL, null=True, blank=True)
-    # Add MSP_staff if you track individual MSP staff members distinct from the MSP vendor itself.
-
-    # This resource's current assigned skill and level (derived or set)
-    current_skill = models.ForeignKey(Skill, on_delete=models.SET_NULL, null=True, blank=True)
-    current_level = models.CharField(max_length=20, blank=True, null=True) # e.g. Junior/Mid/Senior
-
-    def __str__(self):
-        return self.display_name
-
-    # Helper to get the associated rate from RateCard for this specific resource
-    def get_current_hourly_rate(self, year):
-        # Logic to find the most appropriate RateCard for this resource in a given year
-        # This might involve matching on resource_category, current_skill, current_level, country, etc.
-        try:
-            rate_card = RateCard.objects.get(
-                year=year,
-                resource_category=self.resource_category,
-                skill=self.current_skill,
-                level=self.current_level,
-                # Add country filtering here based on the resource's location
-            )
-            return rate_card.hourly_rate
-        except RateCard.DoesNotExist:
-            return None # Or raise an error, or return a default
-            
 
 class Position(InfoObject):
     # Override parent code to remove unique constraint
@@ -255,37 +199,11 @@ class Position(InfoObject):
     def __str__(self):
         status = 'Open' if self.is_open else 'Filled'
         return f"[{self.year.code}] {self.code} ({self.skill}/{self.level}) - {status}"
+# New KeyFigures for Position budgeting:
+# budgeted_fte = KeyFigure.objects.create(code='BUDGETED_FTE', name='Budgeted Full-Time Equivalent')
+# position_status = KeyFigure.objects.create(code='POSITION_STATUS', name='Position Status (Open/Filled)')
+# intended_category = KeyFigure.objects.create(code='INTENDED_CATEGORY', name='Intended Resource Category')
 
-class Employee(models.Model):
-    # This could be your Django User model or a Profile extending it
-    user = models.OneToOneField(User, on_delete=models.CASCADE, primary_key=True)
-    employee_id = models.CharField(max_length=20, unique=True)
-    hire_date = models.DateField()
-    annual_salary = models.DecimalField(max_digits=12, decimal_places=2)
-    # ... other HR specific fields (benefits info, department history, etc.)
-
-    def __str__(self):
-        return f"{self.user.get_full_name()} (EMP)"
-    
-class Vendor(models.Model):
-    name = models.CharField(max_length=255, unique=True)
-    vendor_type = models.CharField(max_length=20, choices=RateCard.RESOURCE_CATEGORY_CHOICES[1:]) # CON, MSP
-    # ... vendor specific details (contact info, billing terms, etc.)
-    def __str__(self):
-        return self.name
-
-class Contractor(models.Model):
-    # If a contractor is an individual working for a Vendor
-    vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT)
-    first_name = models.CharField(max_length=100)
-    last_name = models.CharField(max_length=100)
-    contract_id = models.CharField(max_length=50, unique=True)
-    contract_start_date = models.DateField()
-    contract_end_date = models.DateField()
-    # ... other contractor-specific details
-
-    def __str__(self):
-        return f"{self.first_name} {self.last_name} (CON via {self.vendor.name})"
 
 
 class UserMaster(models.Model):
@@ -316,6 +234,13 @@ class KeyFigure(models.Model):
     name = models.CharField(max_length=200)
     is_percent = models.BooleanField(default=False)
     default_uom = models.ForeignKey(UnitOfMeasure, null=True, on_delete=models.SET_NULL)
+
+# Pre-populate some KeyFigures for your rates:
+# hourly_rate = KeyFigure.objects.create(code='HOURLY_RATE', name='Hourly Rate (Fully Loaded)')
+# base_salary_hourly_equiv = KeyFigure.objects.create(code='BASE_SALARY_HRLY', name='Base Salary Hourly Equivalent')
+# benefits_hourly_equiv = KeyFigure.objects.create(code='BENEFITS_HRLY', name='Benefits Hourly Equivalent')
+# payroll_tax_hourly_equiv = KeyFigure.objects.create(code='PAYROLL_TAX_HRLY', name='Payroll Tax Hourly Equivalent')
+# overhead_allocation_hourly = KeyFigure.objects.create(code='OVERHEAD_HRLY', name='Overhead Allocation Hourly')
 
 # ── 2. PlanningLayout & Year‐Scoped Layouts ─────────────────────────────────
 
