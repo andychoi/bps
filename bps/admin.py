@@ -4,7 +4,7 @@ from django.contrib.contenttypes.admin import GenericTabularInline
 from .models import (
     UnitOfMeasure, ConversionRate,
     Constant, SubFormula, Formula, FormulaRun, FormulaRunEntry,
-    PlanningFunction, ReferenceData,
+    PlanningFunction, ReferenceData, Position, RateCard, 
     Year, Version, OrgUnit, Account, Service, CBU, CostCenter, InternalOrder,
     SLAProfile, KeyFigure,
     PlanningLayout, PlanningDimension, PlanningKeyFigure, PlanningLayoutYear,
@@ -103,7 +103,7 @@ class LayoutYearInline(admin.TabularInline):
 
 @admin.register(PlanningLayout)
 class PlanningLayoutAdmin(admin.ModelAdmin):
-    list_display = ('code', 'title', 'domain', 'default')
+    list_display = ('code', 'name', 'domain', 'default')
     inlines      = [PlanningDimensionInline, PlanningKeyFigureInline, LayoutYearInline]
 
 @admin.register(PlanningLayoutYear)
@@ -174,3 +174,29 @@ class PlanningFactAdmin(admin.ModelAdmin):
     list_filter   = ('year','period','uom','service','account','key_figure')
     search_fields = ('driver_refs',)
     readonly_fields = ('request',)
+
+
+@admin.register(Position)
+class PositionAdmin(admin.ModelAdmin):
+    list_display = ('year', 'code', 'skill_group', 'level', 'fte', 'is_open')
+    list_filter = ('year', 'skill_group', 'level', 'is_open')
+    search_fields = ('code', 'skill_group', 'level')
+    ordering = ('year__code', 'skill_group', 'level', 'code')
+    fieldsets = (
+        (None, {
+            'fields': ('year', 'code', 'name', 'skill_group', 'level', 'fte', 'is_open')
+        }),
+    )
+
+
+@admin.register(RateCard)
+class RateCardAdmin(admin.ModelAdmin):
+    list_display = ('year', 'skill_group', 'vendor_type', 'country', 'efficiency_factor', 'hourly_rate')
+    list_filter = ('year', 'skill_group', 'vendor_type', 'country')
+    search_fields = ('skill_group', 'country', 'vendor_type')
+    ordering = ('year__code', 'skill_group', 'vendor_type', 'country')
+    fieldsets = (
+        (None, {
+            'fields': ('year', 'skill_group', 'vendor_type', 'country', 'efficiency_factor', 'hourly_rate')
+        }),
+    )

@@ -1,11 +1,13 @@
 django
 psycopg
 psycopg-binary==3.2.3
+django-environ
 
 django-treebeard~=4.7.1
 
 crispy
 crispy-bootstrap5==2024.10 # Exact pin as in original
+django-crispy-forms
 django_filter~=24.3
 django_object_actions~=4.3
 django-mass-edit~=3.5.0

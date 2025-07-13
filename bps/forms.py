@@ -151,8 +151,8 @@ class PlanningSessionForm(forms.ModelForm):
         model = PlanningSession
         fields = ['layout_year','org_unit']
         widgets = {
-           'layout_year': ModelSelect2(url='layoutyear-autocomplete'),
-           'org_unit'   : ModelSelect2(url='orgunit-autocomplete'),
+           'layout_year': ModelSelect2(url='bps:layoutyear-autocomplete'),
+           'org_unit'   : ModelSelect2(url='bps:orgunit-autocomplete'),
         }
     def __init__(self,*a,**kw):
         super().__init__(*a,**kw)

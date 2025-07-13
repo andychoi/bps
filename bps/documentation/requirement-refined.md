@@ -89,10 +89,9 @@ Here’s a redesigned set of clear, structured requirements for developing a rob
 
 🌟 VI. Organizational Alignment and Ownership
 
-1. Ownership and Accountability
-	•	Clearly define ownership and accountability:
+1. System/Service Master Data and Orgunit, CBU assignment
 	•	Org-unit-level assignment of each system/service.
-	•	Assign business alignment with specific Customer Business Units (CBUs).
+	•	Each system/service has assigned single Customer Business Unit (CBU)
 
 2. Hierarchical Management and Approval Workflow
 	•	Implement approval workflows for:

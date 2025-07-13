@@ -124,16 +124,23 @@ class InternalOrder(InfoObject):
     cc_code    = models.CharField(max_length=10, blank=True)    # SAP cost center code
 
 
-class UserMaster(models.Model):
-    """
-    Links your custom user profile to OrgUnit & CostCenter.
-    """
-    user      = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-    org_unit  = models.ForeignKey(OrgUnit, on_delete=models.SET_NULL, null=True)
-    cost_center = models.ForeignKey(CostCenter, on_delete=models.SET_NULL, null=True)
+class Position(InfoObject):
+    # Override parent code to remove unique constraint
+    code        = models.CharField(max_length=20)
+    year        = models.ForeignKey(Year, on_delete=models.CASCADE)
+    skill_group = models.CharField(max_length=50)
+    level       = models.CharField(max_length=20)      # e.g. Junior/Mid/Senior
+    fte         = models.FloatField(default=1.0)        # FTE equivalent
+    is_open     = models.BooleanField(default=False)    # open vs. filled
+
+    class Meta(InfoObject.Meta):
+        unique_together = ('year', 'code')
+        ordering = ['year__code', 'order', 'code']
 
     def __str__(self):
-        return self.user.get_full_name() or self.user.username
+        status = 'Open' if self.is_open else 'Filled'
+        return f"[{self.year.code}] {self.code} ({self.skill_group}/{self.level}) – {status}"
+        
 
 class CBU(InfoObject):
     """Client Business Unit (inherits InfoObject)"""
@@ -150,6 +157,40 @@ class CBU(InfoObject):
     def __str__(self):
         return f"{self.code} – {self.name}"
 
+
+class RateCard(models.Model):
+    """
+    Contractor/MSP rate and efficiency planning, scoped by Year.
+    """
+    VENDOR_CHOICES = [('CON','Contractor'), ('MSP','MSP')]
+
+    year              = models.ForeignKey(Year, on_delete=models.CASCADE)
+    skill_group       = models.CharField(max_length=50)
+    vendor_type       = models.CharField(max_length=20, choices=VENDOR_CHOICES)
+    country           = models.CharField(max_length=50)
+    efficiency_factor = models.DecimalField(max_digits=5, decimal_places=2,
+                                            help_text="0.00–1.00")
+    hourly_rate       = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        unique_together = ('year','skill_group','vendor_type','country')
+        ordering = ['year__code','skill_group','vendor_type','country']
+
+    def __str__(self):
+        return (f"[{self.year.code}] {self.vendor_type} | {self.skill_group} @ "
+                f"{self.country}: {self.hourly_rate}$/h, eff {self.efficiency_factor}")
+
+class UserMaster(models.Model):
+    """
+    Links your custom user profile to OrgUnit & CostCenter.
+    """
+    user      = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    org_unit  = models.ForeignKey(OrgUnit, on_delete=models.SET_NULL, null=True)
+    cost_center = models.ForeignKey(CostCenter, on_delete=models.SET_NULL, null=True)
+
+    def __str__(self):
+        return self.user.get_full_name() or self.user.username
+    
 class SLAProfile(models.Model):
     name           = models.CharField(max_length=50, unique=True)
     response_time  = models.DurationField()
@@ -175,7 +216,7 @@ class PlanningLayout(models.Model):
     Defines which dims & periods & key‐figures go into a layout.
     """
     code = models.CharField(max_length=100, unique=True)
-    title = models.CharField(max_length=200)
+    name = models.CharField(max_length=200)
     domain = models.CharField(max_length=100)  # e.g. 'resource', 'cost', 'demand'
     default = models.BooleanField(default=False)
 

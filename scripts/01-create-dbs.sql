@@ -1,0 +1,2 @@
+CREATE DATABASE psm_db;
+CREATE DATABASE bps_db;

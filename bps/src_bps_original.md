@@ -124,11 +124,11 @@ class LayoutYearAutocomplete(Select2QuerySetView):
 ```python
 from django import forms
 from crispy_forms.helper import FormHelper
-from crispy_forms.layout import Layout, Row, Column, Field, Submit
-from dal_select2.widgets import ModelSelect2, ModelSelect2Multiple
+from crispy_forms.layout import Layout, Row, Column, Submit
+from dal_select2.widgets import ModelSelect2
 from django.contrib.contenttypes.models import ContentType
 from .models import (
-    Constant, SubFormula, Formula,
+    Constant, SubFormula, Formula, PlanningFunction, ReferenceData,
     PlanningLayoutYear, PeriodGrouping, PlanningSession,
     DataRequest, PlanningFact, Year, Version, OrgUnit
 )
@@ -136,43 +136,36 @@ class FactForm(forms.ModelForm):
     class Meta:
         model = PlanningFact
         fields = [
-            'session',
-            'period',
-            'quantity', 'quantity_uom',
-            'amount', 'amount_uom',
-            'other_key_figure', 'other_value',
+            'service', 'account', 'driver_refs',
+            'key_figure', 'value', 'uom',
+            'ref_value', 'ref_uom'
         ]
         widgets = {
-            'session': ModelSelect2(
-                url='bps:layoutyear-autocomplete'
-            ),
-            'period': ModelSelect2(
-                url='bps:period-autocomplete'
-            ),
-            'quantity_uom': ModelSelect2(
-                url='bps:uom-autocomplete'
-            ),
-            'amount_uom': ModelSelect2(
-                url='bps:uom-autocomplete'
-            ),
+            'service': ModelSelect2(url='bps:service-autocomplete'),
+            'account': ModelSelect2(url='bps:account-autocomplete'),
+            'key_figure': ModelSelect2(url='bps:keyfigure-autocomplete'),
+            'uom': ModelSelect2(url='bps:uom-autocomplete'),
+            'ref_uom': ModelSelect2(url='bps:uom-autocomplete'),
         }
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.helper = FormHelper(self)
         self.helper.layout = Layout(
             Row(
-                Column('session', css_class='col-md-4'),
-                Column('period',  css_class='col-md-2'),
-                Column('quantity',     css_class='col-md-2'),
-                Column('quantity_uom', css_class='col-md-2'),
-                Column('amount',       css_class='col-md-2'),
-                Column('amount_uom',   css_class='col-md-2'),
+                Column('service',   css_class='col-md-4'),
+                Column('account',   css_class='col-md-4'),
+                Column('driver_refs', css_class='col-md-4'),
             ),
             Row(
-                Column('other_key_figure', css_class='col-md-4'),
-                Column('other_value',      css_class='col-md-4'),
+                Column('key_figure', css_class='col-md-4'),
+                Column('value',      css_class='col-md-4'),
+                Column('uom',        css_class='col-md-4'),
             ),
-            Submit('save','Save Fact')
+            Row(
+                Column('ref_value', css_class='col-md-4'),
+                Column('ref_uom',   css_class='col-md-4'),
+            ),
+            Submit('save', 'Save Fact')
         )
 class ConstantForm(forms.ModelForm):
     class Meta:
@@ -224,6 +217,42 @@ class FormulaForm(forms.ModelForm):
             'expression',
             Submit('save', 'Save Formula')
         )
+class PlanningFunctionForm(forms.ModelForm):
+    class Meta:
+        model = PlanningFunction
+        fields = ['layout', 'name', 'function_type', 'parameters']
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper(self)
+        self.helper.layout = Layout(
+            Row(
+                Column('layout', css_class='col-md-4'),
+                Column('name', css_class='col-md-4'),
+                Column('function_type', css_class='col-md-4'),
+            ),
+            'parameters',
+            Submit('save','Save Function')
+        )
+class ReferenceDataForm(forms.ModelForm):
+    class Meta:
+        model = ReferenceData
+        fields = ['name', 'source_version', 'source_year', 'description']
+        widgets = {
+            'source_version': ModelSelect2(url='bps:version-autocomplete'),
+            'source_year'   : ModelSelect2(url='bps:year-autocomplete'),
+        }
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper(self)
+        self.helper.layout = Layout(
+            Row(
+                Column('name', css_class='col-md-4'),
+                Column('source_version', css_class='col-md-4'),
+                Column('source_year', css_class='col-md-4'),
+            ),
+            'description',
+            Submit('save','Save Reference')
+        )
 class PlanningSessionForm(forms.ModelForm):
     class Meta:
         model = PlanningSession
@@ -254,19 +283,6 @@ class PeriodSelector(forms.Form):
             'grouping',
             Submit('apply','Apply')
         )
-class PlanningFactForm(forms.ModelForm):
-    class Meta:
-        model = PlanningFact
-        fields = [
-          'period','quantity','quantity_uom',
-          'amount','amount_uom',
-          'other_key_figure','other_value',
-        ]
-        widgets = {
-          'period': forms.TextInput(attrs={'placeholder':'01, Q1, H1'}),
-          'quantity_uom': ModelSelect2(url='uom-autocomplete'),
-          'amount_uom':   ModelSelect2(url='uom-autocomplete'),
-        }
 ```
 
 ### `formula_executor.py`
@@ -278,12 +294,13 @@ from django.apps import apps
 from django.db.models import Sum, Avg, Min, Max, Q
 from bps.models import (
     PlanningFact, Formula, Constant, SubFormula,
-    FormulaRun, FormulaRunEntry, UnitOfMeasure
+    FormulaRun, FormulaRunEntry, ReferenceData
 )
 _AGG_FUNCS = {
     'SUM': Sum, 'AVG': Avg, 'MIN': Min, 'MAX': Max
 }
 class FormulaExecutor:
+    _re_refdata = re.compile(r"REF\('([^']+)'\s*,\s*([^\)]+)\)")
     def __init__(self, formula: Formula, session, period: str, preview: bool=False):
         self.formula = formula
         self.session = session
@@ -308,6 +325,7 @@ class FormulaExecutor:
     def _apply(self, dims_map: Dict[str,Any]):
         expr = self.formula.expression
         expr = self._expand_subformulas(expr)
+        expr = self._replace_reference_data(expr, dims_map)
         expr = self._replace_constants(expr)
         expr = self._rewrite_conditionals(expr)
         tgt, src = map(str.strip, expr.split('=',1))
@@ -443,6 +461,23 @@ class FormulaExecutor:
             )
             rec.save()
         return rec
+    def _replace_reference_data(self, expr: str, dims_map: dict) -> str:
+        def repl(m):
+            ref_name = m.group(1)
+            dims_spec= m.group(2)
+            filters = {}
+            for part in dims_spec.split(','):
+                name,val = part.split('=')
+                name, val = name.strip(), val.strip()
+                if val == '$LOOP':
+                    inst = dims_map[name]
+                else:
+                    inst = apps.get_model('bps',name).objects.get(pk=int(val))
+                filters[name.lower()] = inst
+            ref = ReferenceData.objects.get(name=ref_name)
+            agg = ref.fetch_reference_fact(**filters)
+            return str(agg.get('value__sum') or 0)
+        return self._re_refdata.sub(repl, expr)
 ```
 
 ### `models.py`
@@ -453,6 +488,7 @@ from django.db.models import Sum
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from decimal import Decimal
+from treebeard.mp_tree import MP_Node
 class UnitOfMeasure(models.Model):
     code        = models.CharField(max_length=10, unique=True)
     name        = models.CharField(max_length=50)
@@ -486,22 +522,44 @@ class Year(InfoObject):
     pass
 class Version(InfoObject):
     pass
-class OrgUnit(InfoObject):
+class OrgUnit(MP_Node, InfoObject):
     head_user      = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL, null=True, blank=True,
         help_text="OrgUnit lead who must draft and approve"
     )
-    parent         = models.ForeignKey(
-        'self',
-        on_delete=models.SET_NULL, null=True, blank=True,
-        related_name='children'
-    )
     cc_code    = models.CharField(max_length=10, blank=True)
+    node_order_by = ['order', 'code']
 class Account(InfoObject):
     pass
 class Service(InfoObject):
-    pass
+    category         = models.CharField(max_length=50)
+    subcategory      = models.CharField(max_length=50)
+    related_services = models.ManyToManyField('self', blank=True)
+    CRITICALITY_CHOICES = [('H','High'),('M','Medium'),('L','Low')]
+    criticality      = models.CharField(max_length=1, choices=CRITICALITY_CHOICES)
+    sla_response     = models.DurationField(help_text="e.g. PT2H for 2 hours")
+    sla_resolution   = models.DurationField(help_text="e.g. PT4H for 4 hours")
+    availability     = models.DecimalField(max_digits=5, decimal_places=3,
+                                           help_text="e.g. 99.900")
+    SUPPORT_HOUR_CHOICES = [
+        ('24x7','24×7'),
+        ('9x5','9×5 Mon–Fri'),
+        ('custom','Custom')
+    ]
+    support_hours    = models.CharField(max_length=10,
+                                        choices=SUPPORT_HOUR_CHOICES)
+    orgunit      = models.ForeignKey('OrgUnit',
+                                         on_delete=models.SET_NULL,
+                                         null=True, blank=True)
+    owner            = models.ForeignKey(settings.AUTH_USER_MODEL,
+                                         on_delete=models.SET_NULL,
+                                         null=True, blank=True)
+    is_active        = models.BooleanField(default=True)
+    class Meta:
+        ordering = ['category','subcategory','code']
+    def __str__(self):
+        return f"{self.code} – {self.name}"
 class CostCenter(InfoObject):
     pass
 class InternalOrder(InfoObject):
@@ -513,6 +571,24 @@ class UserMaster(models.Model):
     def __str__(self):
         return self.user.get_full_name() or self.user.username
 class CBU(InfoObject):
+    group       = models.CharField(max_length=50, blank=True)
+    TIER_CHOICES = [('1','Tier-1'),('2','Tier-2'),('3','Tier-3')]
+    tier        = models.CharField(max_length=1, choices=TIER_CHOICES)
+    sla_profile = models.ForeignKey('SLAProfile', on_delete=models.SET_NULL,
+                                    null=True, blank=True)
+    region      = models.CharField(max_length=50, blank=True)
+    is_active   = models.BooleanField(default=True)
+    node_order_by = ['cbu_code']
+    def __str__(self):
+        return f"{self.code} – {self.name}"
+class SLAProfile(models.Model):
+    name           = models.CharField(max_length=50, unique=True)
+    response_time  = models.DurationField()
+    resolution_time= models.DurationField()
+    availability   = models.DecimalField(max_digits=5, decimal_places=3)
+    description    = models.TextField(blank=True)
+    def __str__(self):
+        return self.name
 class KeyFigure(models.Model):
     code = models.CharField(max_length=100, unique=True)
     name = models.CharField(max_length=200)
@@ -665,16 +741,75 @@ class PlanningFunction(models.Model):
     FUNCTION_CHOICES = [
         ('COPY', 'Copy'),
         ('DISTRIBUTE', 'Distribute'),
-        ('REVALUE', 'Revalue'),
-        ('AGGREGATE', 'Aggregate'),
-        ('ALLOCATE', 'Allocate'),
         ('CURRENCY_CONVERT', 'Currency Convert'),
     ]
-    name = models.CharField(max_length=50)
+    layout      = models.ForeignKey(PlanningLayout, on_delete=models.CASCADE)
+    name        = models.CharField(max_length=50)
     function_type = models.CharField(choices=FUNCTION_CHOICES, max_length=20)
-    parameters = models.JSONField(default=dict)
+    parameters   = models.JSONField(
+        default=dict,
+        help_text=
+    )
     def execute(self, session):
-        pass
+        if self.function_type == 'COPY':
+            return self._copy_data(session)
+        if self.function_type == 'DISTRIBUTE':
+            return self._distribute(session)
+        if self.function_type == 'CURRENCY_CONVERT':
+            return self._currency_convert(session)
+    def _copy_data(self, session):
+        from bps.models import PlanningFact
+        src_vid = self.parameters['from_version']
+        tgt_vid = self.parameters['to_version']
+        year    = self.parameters.get('year')
+        period  = self.parameters.get('period')
+        src_facts = PlanningFact.objects.filter(
+            session__layout_year__version_id=src_vid,
+            session=session,
+            year_id=year,
+            period=period
+        )
+        created = 0
+        for f in src_facts:
+            f.pk = None
+            f.request = None
+            f.session.layout_year.version_id = tgt_vid
+            f.save()
+            created += 1
+        return created
+    def _distribute(self, session):
+        from bps.models import PlanningFact, ReferenceData
+        by = self.parameters['by']
+        ref_name = self.parameters['reference_data']
+        ref = ReferenceData.objects.get(name=ref_name)
+        total = ref.fetch_reference_fact(**{by: None})['value__sum'] or 0
+        if total == 0:
+            return 0
+        qs = PlanningFact.objects.filter(session=session)
+        created = 0
+        for f in qs:
+            share = f.value / total
+            f.value = share * total
+            f.save()
+            created += 1
+        return created
+    def _currency_convert(self, session):
+        from bps.models import PlanningFact, ConversionRate, UnitOfMeasure
+        tgt = self.parameters['target_uom']
+        tgt_uom = UnitOfMeasure.objects.get(code=tgt)
+        conv_map = {
+          (c.from_uom_id, c.to_uom_id): c.factor
+          for c in ConversionRate.objects.filter(to_uom=tgt_uom)
+        }
+        updated = 0
+        for f in PlanningFact.objects.filter(session=session):
+            key = (f.uom_id, tgt_uom.id)
+            if key not in conv_map: continue
+            f.value = round(f.value * conv_map[key], 4)
+            f.uom = tgt_uom
+            f.save()
+            updated += 1
+        return updated
 class ReferenceData(models.Model):
     name = models.CharField(max_length=100)
     source_version = models.ForeignKey('Version', on_delete=models.CASCADE)
@@ -732,6 +867,501 @@ class FormulaRunEntry(models.Model):
         return f"{self.record} :: {self.key}: {self.old_value} → {self.new_value}"
 ```
 
+### `templates/bps/base.html`
+```html
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Enterprise Planning{% endblock %}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUa6mY5D6T+Ly2YbMkQZ6Yr6Y1YAd+0F6fqG5s5B5KRb8DXe6fVXMZV+fl1M" crossorigin="anonymous">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="{% static 'css/custom.css' %}" rel="stylesheet">
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-light bg-light shadow-sm">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="{% url 'bps:dashboard' %}">CorpPlanner</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarMain" aria-controls="navbarMain" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarMain">
+                <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                    {% block nav_links %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="{% url 'bps:inbox' %}"><i class="bi bi-inbox"></i> Inbox</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{% url 'bps:notifications' %}"><i class="bi bi-bell"></i> Notifications</a>
+                    </li>
+                    {% endblock %}
+                </ul>
+                <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="bi bi-person-circle"></i> {{ request.user.get_full_name }}
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="userDropdown">
+                            <li><a class="dropdown-item" href="{% url 'bps:profile' %}">Profile</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="{% url 'logout' %}">Logout</a></li>
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+    <div class="container-fluid mt-3">
+        {% if breadcrumbs %}
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                {% for crumb in breadcrumbs %}
+                <li class="breadcrumb-item {% if forloop.last %}active{% endif %}" {% if forloop.last %}aria-current="page"{% endif %}>
+                    {% if not forloop.last %}
+                    <a href="{{ crumb.url }}">{{ crumb.title }}</a>
+                    {% else %}
+                    {{ crumb.title }}
+                    {% endif %}
+                </li>
+                {% endfor %}
+            </ol>
+        </nav>
+        {% endif %}
+        {% if messages %}
+            {% for message in messages %}
+            <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+            {% endfor %}
+        {% endif %}
+        {% block content %}{% endblock %}
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-ENjdO4Dr2bkBIFxQpeo7F9LQG8Z1iQg9Ph2+Qx4U5Y0Q5h9vF3Vf5y2Q5y2qbi1" crossorigin="anonymous"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>
+```
+
+### `templates/bps/constant_list.html`
+```html
+{% extends "bps/base.html" %}
+{% load crispy_forms_tags %}
+{% block content %}
+<h1>Constants</h1>
+<form method="post" class="mb-4">{% csrf_token %}
+  {{ form|crispy }}
+</form>
+<table class="table">
+  <thead><tr><th>Name</th><th>Value</th></tr></thead>
+  <tbody>
+    {% for c in consts %}
+      <tr><td>{{ c.name }}</td><td>{{ c.value }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
+```
+
+### `templates/bps/dashboard.html`
+```html
+{% extends "bps/base.html" %}
+{% load static %}
+{% block content %}
+<div class="container py-4">
+  <h1 class="mb-4">Planning Dashboard</h1>
+  <div class="row mb-4">
+    <div class="col-md-4">
+      <div class="card">
+        <div class="card-header">Select Planning Year</div>
+        <div class="card-body p-3">
+          <form method="get">
+            <select name="year" class="form-select" onchange="this.form.submit()">
+              {% for y in all_years %}
+                <option value="{{ y }}" {% if y == selected_year %}selected{% endif %}>
+                  {{ y }}
+                </option>
+              {% endfor %}
+            </select>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="row gy-4">
+    <div class="col-md-6">
+      <div class="card h-100">
+        <div class="card-header bg-warning text-white">Incomplete Planning Tasks</div>
+        <ul class="list-group list-group-flush">
+          {% for sess in incomplete_sessions %}
+            <li class="list-group-item">
+              <a href="{% url 'bps:session_detail' sess.pk %}">
+                {{ sess.org_unit.name }} &dash; {{ sess.layout_year.layout.name }}
+              </a>
+            </li>
+          {% empty %}
+            <li class="list-group-item">None—everything is up to date!</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+    <div class="col-md-6">
+      <div class="card h-100">
+        <div class="card-header bg-info text-white">Available Layouts</div>
+        <div class="card-body">
+          <div class="row row-cols-1 row-cols-md-2 g-3">
+            {% for ly in layouts %}
+              <div class="col">
+                <div class="card h-100">
+                  <div class="card-body p-2">
+                    <h5 class="card-title mb-1">{{ ly.layout.name }}</h5>
+                    <p class="card-text small mb-0">Version: {{ ly.version.code }}</p>
+                  </div>
+                  <div class="card-footer text-end">
+                    <a href="{% url 'bps:session_list' %}?layout_year={{ ly.pk }}"
+                       class="btn btn-sm btn-outline-primary">
+                       Open
+                    </a>
+                  </div>
+                </div>
+              </div>
+            {% empty %}
+              <p class="text-muted">No layouts defined for {{ selected_year }}.</p>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-header bg-success text-white">Planning Functions</div>
+        <div class="card-body">
+          <div class="list-group">
+            {% for fn in planning_funcs %}
+              <a href="{% url fn.url %}" class="list-group-item list-group-item-action">
+                {{ fn.name }}
+              </a>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-header bg-secondary text-white">Admin</div>
+        <div class="card-body">
+          <div class="list-group">
+            {% for link in admin_links %}
+              <a href="{% url link.url %}" class="list-group-item list-group-item-action">
+                {{ link.name }}
+              </a>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+```
+
+### `templates/bps/data_request_detail.html`
+```html
+{% extends "bps/base.html" %}
+{% load crispy_forms_tags %}
+{% block content %}
+<div class="container my-4">
+  <h1>Data Request {{ dr.id }}</h1>
+  <form method="post" class="mb-4">{% csrf_token %}
+    {{ form|crispy }}
+    <button type="submit" class="btn btn-primary">Update</button>
+    <a href="{% url 'bps:data_request_list' %}" class="btn btn-link">Back to list</a>
+  </form>
+  <h2>Facts</h2>
+  <table class="table table-striped">
+    <thead>
+      <tr>
+        <th>Period</th>
+        <th>Qty</th>
+        <th>UoM</th>
+        <th>Amount</th>
+        <th>UoM</th>
+        <th>Other</th>
+        <th>Value</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in facts %}
+      <tr>
+        <td>{{ f.period }}</td>
+        <td>{{ f.quantity }}</td>
+        <td>{{ f.quantity_uom }}</td>
+        <td>{{ f.amount }}</td>
+        <td>{{ f.amount_uom }}</td>
+        <td>{{ f.other_key_figure }}</td>
+        <td>{{ f.other_value }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7">No facts recorded yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <a href="{% url 'bps:fact_list' dr.pk %}" class="btn btn-success">Add/Edit Facts</a>
+</div>
+{% endblock %}
+```
+
+### `templates/bps/data_request_list.html`
+```html
+{% extends "bps/base.html" %}
+{% block content %}
+<div class="container my-4">
+  <h1>Data Requests</h1>
+  <ul class="list-group mt-3">
+    {% for dr in data_requests %}
+      <li class="list-group-item d-flex justify-content-between align-items-center">
+        <a href="{% url 'bps:data_request_detail' dr.pk %}">
+          {{ dr.id }} – {{ dr.description|default:"(no description)" }}
+        </a>
+        <span class="badge bg-secondary">
+          {{ dr.created_at|date:"Y-m-d H:i" }}
+        </span>
+      </li>
+    {% empty %}
+      <li class="list-group-item">No data requests found.</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endblock %}
+```
+
+### `templates/bps/fact_list.html`
+```html
+{% extends "bps/base.html" %}
+{% load crispy_forms_tags %}
+{% block content %}
+<div class="container my-4">
+  <h1>Facts for Request {{ dr.id }}</h1>
+  <form method="post" class="row g-3 align-items-end mb-4">{% csrf_token %}
+    <div class="col-md-2">
+      {{ form.session|as_crispy_field }}
+    </div>
+    <div class="col-md-2">
+      {{ form.period|as_crispy_field }}
+    </div>
+    <div class="col-md-2">
+      {{ form.quantity|as_crispy_field }}
+    </div>
+    <div class="col-md-2">
+      {{ form.quantity_uom|as_crispy_field }}
+    </div>
+    <div class="col-md-2">
+      {{ form.amount|as_crispy_field }}
+    </div>
+    <div class="col-md-2">
+      {{ form.amount_uom|as_crispy_field }}
+    </div>
+    <div class="col-md-3">
+      {{ form.other_key_figure|as_crispy_field }}
+    </div>
+    <div class="col-md-3">
+      {{ form.other_value|as_crispy_field }}
+    </div>
+    <div class="col-md-2">
+      <button type="submit" class="btn btn-primary">Save Fact</button>
+      <a href="{% url 'bps:data_request_detail' dr.pk %}" class="btn btn-link">Done</a>
+    </div>
+  </form>
+  <table class="table table-bordered">
+    <thead>
+      <tr>
+        <th>Period</th><th>Qty</th><th>UoM</th>
+        <th>Amount</th><th>UoM</th><th>Other</th><th>Value</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in facts %}
+      <tr>
+        <td>{{ f.period }}</td>
+        <td>{{ f.quantity }}</td>
+        <td>{{ f.quantity_uom }}</td>
+        <td>{{ f.amount }}</td>
+        <td>{{ f.amount_uom }}</td>
+        <td>{{ f.other_key_figure }}</td>
+        <td>{{ f.other_value }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7">No facts yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+```
+
+### `templates/bps/formula_list.html`
+```html
+{% extends "bps/base.html" %}
+{% load crispy_forms_tags %}
+{% block content %}
+<h1>Formulas</h1>
+<form method="post" class="mb-4">{% csrf_token %}
+  {{ form|crispy }}
+</form>
+<table class="table">
+  <thead><tr><th>Name</th><th>Loop Dim</th><th>Expression</th><th>Actions</th></tr></thead>
+  <tbody>
+    {% for f in formulas %}
+      <tr>
+        <td>{{ f.name }}</td>
+        <td>{{ f.loop_dimension.model }}</td>
+        <td><code>{{ f.expression }}</code></td>
+        <td>
+          <a href="{% url 'formula_run' f.pk %}?period=01" class="btn btn-sm btn-primary">
+            Run
+          </a>
+        </td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
+```
+
+### `templates/bps/session_detail.html`
+```html
+{% extends "bps/base.html" %}
+{% load crispy_forms_tags %}
+{% block content %}
+<h1>Planning: {{ sess.org_unit }} / {{ sess.layout_year }}</h1>
+{% if sess.can_edit(request.user) %}
+  <form method="post" class="mb-3">{% csrf_token %}
+    {{ form|crispy }}
+  </form>
+{% endif %}
+<h2>Period Definition</h2>
+<form method="post" class="mb-3">{% csrf_token %}
+  {{ period_form|crispy }}
+</form>
+<div id="period-table">
+  <vue-period-table
+    :buckets='{{ periods|safe }}'
+  />
+</div>
+<h2>Current Facts ({{ dr.description }})</h2>
+<table class="table table-sm">
+  <thead>
+    <tr>
+      <th>Period</th>
+      <th>Key Figure</th>
+      <th>Value</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for f in facts %}
+    <tr>
+      <td>{{ f.period }}</td>
+      <td>{{ f.key_figure }}</td>
+      <td>{{ f.value }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if sess.status == sess.Status.DRAFT and request.user == sess.org_unit.head_user %}
+  <form method="post">
+    {% csrf_token %}
+    <button name="complete" class="btn btn-success">Mark Completed</button>
+  </form>
+{% endif %}
+{% if sess.status == sess.Status.COMPLETED and request.user.is_staff %}
+  <form method="post">
+    {% csrf_token %}
+    <button name="freeze" class="btn btn-danger">Freeze Session</button>
+  </form>
+{% endif %}
+{% endblock %}
+<script src="https://unpkg.com/vue@3"></script>
+<script>
+const app = Vue.createApp({});
+app.component('vue-period-table', {
+  props:['buckets'],
+  template: `
+    <table class="table table-bordered">
+      <thead>
+        <tr>
+          <th v-for="b in buckets">{{ b.name }}</th>
+        </tr>
+      </thead>
+    </table>`
+});
+app.mount('#period-table');
+</script>
+```
+
+### `templates/bps/subformula_list.html`
+```html
+{% extends "bps/base.html" %}
+{% load crispy_forms_tags %}
+{% block content %}
+<h1>Sub-Formulas</h1>
+<form method="post" class="mb-4">{% csrf_token %}
+  {{ form|crispy }}
+</form>
+<table class="table">
+  <thead><tr><th>Name</th><th>Expression</th></tr></thead>
+  <tbody>
+    {% for s in subs %}
+      <tr><td>{{ s.name }}</td><td><code>{{ s.expression }}</code></td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
+```
+
+### `templates/bps/variable_list.html`
+```html
+{% extends "bps/base.html" %}
+{% load crispy_forms_tags %}
+{% block content %}
+<div class="container my-4">
+  <h1>Global Variables</h1>
+  <form method="post" class="row g-3 align-items-end mb-4">{% csrf_token %}
+    <div class="col-md-4">
+      {{ form.name|as_crispy_field }}
+    </div>
+    <div class="col-md-4">
+      {{ form.value|as_crispy_field }}
+    </div>
+    <div class="col-md-8">
+      {{ form.description|as_crispy_field }}
+    </div>
+    <div class="col-md-2">
+      <button type="submit" class="btn btn-primary">Add Variable</button>
+    </div>
+  </form>
+  <table class="table table-hover">
+    <thead>
+      <tr><th>Name</th><th>Value</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      {% for v in consts %}
+      <tr>
+        <td>{{ v.name }}</td>
+        <td>{{ v.value }}</td>
+        <td>{{ v.description }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="3">No variables defined.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+```
+
 ### `urls.py`
 ```python
 from django.urls import path
@@ -746,10 +1376,17 @@ from .models import (
 app_name = "bps"
 urlpatterns = [
     path('', views.dashboard, name='dashboard'),
+    path('profile/', views.profile, name='profile'),
+    path('inbox/', views.inbox, name='inbox'),
+    path('notifications/', views.notifications, name='notifications'),
     path('constants/', views.constant_list, name='constant_list'),
     path('subformulas/', views.subformula_list, name='subformula_list'),
     path('formulas/', views.formula_list, name='formula_list'),
     path('formulas/run/<int:pk>/', views.formula_run, name='formula_run'),
+    path('functions/run/<int:pk>/', views.run_planning_function, name='run_function'),
+    path('functions/',            views.planning_function_list,  name='planning_function_list'),
+    path('functions/run/<int:pk>/<int:session_id>/', views.run_planning_function, name='run_function'),
+    path('reference-data/',       views.reference_data_list,     name='reference_data_list'),
     path('data-requests/', views.data_request_list, name='data_request_list'),
     path('data-requests/<uuid:pk>/', views.data_request_detail, name='data_request_detail'),
     path('requests/<uuid:request_id>/facts/', views.fact_list, name='fact_list'),
@@ -775,18 +1412,46 @@ from uuid import UUID
 from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib import messages
 from django.urls import reverse
+from django.utils import timezone
 from .models import (
     Year, PlanningLayoutYear,
-    PlanningSession, DataRequest, PlanningFact,
+    PlanningSession, PlanningFunction, ReferenceData, DataRequest, PlanningFact,
     PeriodGrouping,
     Constant, SubFormula, Formula, FormulaRun
 )
-from .forms  import PlanningSessionForm, PeriodSelector, ConstantForm, SubFormulaForm, FormulaForm
+from .forms  import (
+    PlanningSessionForm, PeriodSelector, ConstantForm, SubFormulaForm,
+    FormulaForm, FactForm, PlanningFunctionForm, ReferenceDataForm
+)
 from .formula_executor import FormulaExecutor
 from django.forms import modelform_factory
+from django.shortcuts import render
+from django.urls import reverse
+def inbox(request):
+    breadcrumbs = [
+        {'url': reverse('bps:dashboard'), 'title': 'Dashboard'},
+        {'url': request.path, 'title': 'Inbox'},
+    ]
+    items = []
+    return render(request, 'bps/inbox.html', {
+        'breadcrumbs': breadcrumbs,
+        'items': items,
+    })
+def profile(request):
+    return ""
+def notifications(request):
+    breadcrumbs = [
+        {'url': reverse('bps:dashboard'), 'title': 'Dashboard'},
+        {'url': request.path, 'title': 'Notifications'},
+    ]
+    notifications_list = []
+    return render(request, 'bps/notifications.html', {
+        'breadcrumbs': breadcrumbs,
+        'notifications': notifications_list,
+    })
 def dashboard(request):
     current_year = timezone.now().year
-    all_years = Year.objects.order_by('value').values_list('code', flat=True)
+    all_years = Year.objects.order_by('code').values_list('code', flat=True)
     selected_year = request.GET.get('year', str(current_year + 1))
     if selected_year not in all_years:
         selected_year = all_years[-1] if all_years else str(current_year)
@@ -891,6 +1556,41 @@ def formula_run(request, pk):
     entries = executor.execute()
     messages.success(request, f"Executed {formula.name}, {entries.count()} entries updated.")
     return redirect(reverse('formula_list'))
+def planning_function_list(request):
+    if request.method == 'POST':
+        form = PlanningFunctionForm(request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Planning Function saved.")
+            return redirect('bps:planning_function_list')
+    else:
+        form = PlanningFunctionForm()
+    functions = PlanningFunction.objects.all()
+    return render(request, 'bps/planning_function_list.html', {
+        'form': form, 'functions': functions
+    })
+def run_planning_function(request, pk, session_id):
+    func = get_object_or_404(PlanningFunction, pk=pk)
+    session = get_object_or_404(PlanningSession, pk=session_id)
+    result = func.execute(session)
+    messages.success(
+        request,
+        f"{func.get_function_type_display()} executed, result: {result}"
+    )
+    return redirect('bps:session_detail', pk=session_id)
+def reference_data_list(request):
+    if request.method == 'POST':
+        form = ReferenceDataForm(request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Reference Data saved.")
+            return redirect('bps:reference_data_list')
+    else:
+        form = ReferenceDataForm()
+    refs = ReferenceData.objects.all()
+    return render(request, 'bps/reference_data_list.html', {
+        'form': form, 'references': refs
+    })
 DataRequestForm = modelform_factory(DataRequest, fields=['description'])
 def data_request_list(request):
     requests = DataRequest.objects.order_by('-created_at')
@@ -928,9 +1628,7 @@ def fact_list(request, request_id: UUID):
         form = FactForm()
     facts = dr.facts.order_by('period')
     return render(request, "bps/fact_list.html", {
-        "dr": dr,
-        "form": form,
-        "facts": facts,
+        "dr": dr, "form": form, "facts": facts
     })
 def variable_list(request):
     if request.method == 'POST':
@@ -946,5 +1644,14 @@ def variable_list(request):
         "form": form,
         "consts": consts,
     })
+def run_planning_function(request, pk, session_id):
+    func = get_object_or_404(PlanningFunction, pk=pk)
+    session = get_object_or_404(PlanningSession, pk=session_id)
+    count_or_result = func.execute(session)
+    messages.success(
+        request,
+        f"{func.get_function_type_display()} executed, result: {count_or_result}"
+    )
+    return redirect('bps:session_detail', pk=session_id)
 ```
 

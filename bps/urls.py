@@ -14,7 +14,11 @@ from .models import (
 app_name = "bps"
 
 urlpatterns = [
-    path('', views.dashboard, name='dashboard'),    
+    path('', views.dashboard, name='dashboard'), 
+    path('profile/', views.profile, name='profile'), 
+    path('inbox/', views.inbox, name='inbox'), 
+    path('notifications/', views.notifications, name='notifications'), 
+
     # Constants
     path('constants/', views.constant_list, name='constant_list'),
 
@@ -25,6 +29,10 @@ urlpatterns = [
     path('formulas/', views.formula_list, name='formula_list'),
     path('formulas/run/<int:pk>/', views.formula_run, name='formula_run'),
 
+    # planning functions
+    path('copy-actual/', views.copy_actual, name='copy_actual'),
+    path('distribute-key/', views.distribute_key, name='distribute_key'),
+    
     path('functions/run/<int:pk>/', views.run_planning_function, name='run_function'),
     path('functions/',            views.planning_function_list,  name='planning_function_list'),
     path('functions/run/<int:pk>/<int:session_id>/', views.run_planning_function, name='run_function'),

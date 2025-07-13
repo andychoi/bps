@@ -18,10 +18,44 @@ from .forms  import (
 from .formula_executor import FormulaExecutor
 from django.forms import modelform_factory
 
+from django.shortcuts import render
+from django.urls import reverse
+
+# Dummy Inbox View
+def inbox(request):
+    # Breadcrumbs for navigation
+    breadcrumbs = [
+        {'url': reverse('bps:dashboard'), 'title': 'Dashboard'},
+        {'url': request.path, 'title': 'Inbox'},
+    ]
+    # TODO: Replace with real inbox items
+    items = []  
+    return render(request, 'bps/inbox.html', {
+        'breadcrumbs': breadcrumbs,
+        'items': items,
+    })
+
+def profile(request):
+    return ""
+
+# Dummy Notifications View
+def notifications(request):
+    # Breadcrumbs for navigation
+    breadcrumbs = [
+        {'url': reverse('bps:dashboard'), 'title': 'Dashboard'},
+        {'url': request.path, 'title': 'Notifications'},
+    ]
+    # TODO: Replace with real notifications
+    notifications_list = []
+    return render(request, 'bps/notifications.html', {
+        'breadcrumbs': breadcrumbs,
+        'notifications': notifications_list,
+    })
+
 def dashboard(request):
     # 1) Determine selected year (default = next calendar year)
     current_year = timezone.now().year
-    all_years = Year.objects.order_by('value').values_list('code', flat=True)
+    all_years = Year.objects.order_by('code').values_list('code', flat=True)
     selected_year = request.GET.get('year', str(current_year + 1))
     if selected_year not in all_years:
         selected_year = all_years[-1] if all_years else str(current_year)
@@ -35,21 +69,27 @@ def dashboard(request):
         status=PlanningSession.Status.DRAFT
     ).select_related('org_unit','layout_year').order_by('org_unit__name')
 
-    # 4) Quick links for planning functions
+    # 4) Quick links for planning tasks (for planning users)
     planning_funcs = [
-        {'name': 'Copy Actual → Plan', 'url': 'bps:copy_actual'},
-        {'name': 'Distribute by Key',   'url': 'bps:distribute_key'},
-        {'name': 'Run All Formulas',    'url': 'bps:formula_list'},
-        {'name': 'Freeze Version',      'url': 'bps:session_list'},
+        {'name': 'Inbox',                  'url': reverse('bps:inbox')},
+        {'name': 'Notifications',          'url': reverse('bps:notifications')},
+        {'name': 'Start New Session',      'url': reverse('bps:session_list')},
+        {'name': 'Run All Formulas',       'url': reverse('bps:formula_list')},
+        {'name': 'Create Reference Data',  'url': reverse('bps:reference_data_list')},
     ]
-
-    # 5) Admin links
+    # 5) Admin links (Planning Administrators)
     admin_links = [
-        {'name': 'Manage Layouts',        'url': 'admin:bps_planninglayout_changelist'},
-        {'name': 'Manage Layout-Years',   'url': 'admin:bps_planninglayoutyear_changelist'},
-        {'name': 'Manage Periods',        'url': 'admin:bps_period_changelist'},
-        {'name': 'Manage Sessions',       'url': 'admin:bps_planningsession_changelist'},
-        {'name': 'Manage Data Requests',  'url': 'admin:bps_datarequest_changelist'},
+        {'name': 'Layouts',        'url': reverse('admin:bps_planninglayout_changelist')},
+        {'name': 'Layout-Years',   'url': reverse('admin:bps_planninglayoutyear_changelist')},
+        {'name': 'Periods',        'url': reverse('admin:bps_period_changelist')},
+        {'name': 'Sessions',       'url': reverse('admin:bps_planningsession_changelist')},
+        {'name': 'Data Requests',  'url': reverse('admin:bps_datarequest_changelist')},
+        {'name': 'Constants',      'url': reverse('bps:constant_list')},
+        {'name': 'SubFormulas',    'url': reverse('bps:subformula_list')},
+        {'name': 'Formulas',       'url': reverse('bps:formula_list')},
+        {'name': 'Functions',      'url': reverse('bps:planning_function_list')},
+        {'name': 'Rate Cards',     'url': reverse('admin:bps_ratecard_changelist')},
+        {'name': 'Positions',      'url': reverse('admin:bps_position_changelist')},
     ]
 
     return render(request, 'bps/dashboard.html', {
@@ -67,7 +107,7 @@ def session_list(request):
 
 def session_detail(request, pk):
     sess = get_object_or_404(PlanningSession, pk=pk)
-
+    can_edit = sess.can_edit(request.user)
     # start planning: create first DataRequest
     if request.method=='POST' and 'start' in request.POST:
         form = PlanningSessionForm(request.POST)
@@ -98,12 +138,26 @@ def session_detail(request, pk):
 
     # facts for the very latest request
     dr = sess.requests.order_by('-created_at').first()
-    facts = dr.facts.all() if dr else []
+    facts = dr.planningfact_set.all() if dr else []
+
+    # Serialize facts for Handsontable
+    import json
+    from django.utils.safestring import mark_safe
+
+    # simple rows: [PeriodName, KeyFigureCode, Value]
+    hot_rows = [
+        [str(f.period), f.key_figure.code, float(f.value)]
+        for f in facts
+    ]
+    hot_data = mark_safe(json.dumps(hot_rows))
 
     return render(request,'bps/session_detail.html',{
         'sess': sess, 'form': form,
+        'can_edit': can_edit,
         'period_form': ps, 'periods': periods,
-        'facts': facts, 'dr': dr
+        'facts': facts, 'dr': dr,
+        'hot_data': hot_data,
+        'can_edit': can_edit,
     })
 
 # ── Constants ──────────────────────────────────────────────────────────────
@@ -233,7 +287,7 @@ def data_request_detail(request, pk: UUID):
     else:
         form = DataRequestForm(instance=dr)
 
-    facts = dr.facts.order_by('period')
+    facts = dr.planningfact_set.order_by('period')
     return render(request, "bps/data_request_detail.html", {
         "dr": dr,
         "form": form,
@@ -254,7 +308,7 @@ def fact_list(request, request_id: UUID):
             return redirect("bps:fact_list", request_id=request_id)
     else:
         form = FactForm()
-    facts = dr.facts.order_by('period')
+    facts = dr.planningfact_set.order_by('period')
     return render(request, "bps/fact_list.html", {
         "dr": dr, "form": form, "facts": facts
     })
@@ -291,3 +345,13 @@ def run_planning_function(request, pk, session_id):
         f"{func.get_function_type_display()} executed, result: {count_or_result}"
     )
     return redirect('bps:session_detail', pk=session_id)
+
+def copy_actual(request):
+    # TODO: wire this up to your actual “Copy Actual → Plan” logic
+    messages.info(request, "Copy Actual → Plan is not yet implemented.")
+    return redirect('bps:dashboard')
+
+def distribute_key(request):
+    # TODO: wire this up to your actual “Distribute by Key” logic
+    messages.info(request, "Distribute by Key is not yet implemented.")
+    return redirect('bps:dashboard')
