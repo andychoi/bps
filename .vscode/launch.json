@@ -1,121 +1,101 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
-    "version": "0.2.0",
-      "inputs": [
-        {
-            "id": "mgmtArgs",
-            "type": "promptString",
-            "description": "manage.py command + its flags (e.g. test_agent --username alice --message \"hi\")"
-        },
-        {
-            "id": "scriptWithArgs",
-            "type": "promptString",
-            "description": "Enter script path and arguments (e.g. apps/foo.py --foo bar)"
-        },
-    ],
-    "configurations": [
-        {
-            "name": "vf Linux Launcher",
-            "type": "python",
-            "request": "launch",    
-            "python": "${workspaceFolder}/.venv/bin/python",    // for linux
-            "program": "${workspaceFolder}/manage.py",
-            // "program": "${workspaceFolder}/apps/pdf/examples/invoice/generate_invoice.py",
-            "args": [
-                "runserver",  "0.0.0.0:8000", 
-            ],
-            "console": "integratedTerminal",
-            "django": true,
-            "justMyCode": true,
-        },
-        {
-            "name": "vf Linux ASGI with with Uvicorn",
-            "type": "python",
-            "request": "launch",    
-            "program": "${workspaceFolder}/.venv/bin/uvicorn",
-            "args": [
-                "psmprj.asgi:application",
-                // "--reload",
-                "--host", "127.0.0.1",
-                "--port", "8000",
-            ],
-            "console": "integratedTerminal",
-            "django": true,
-            "justMyCode": true,
-            "env": {
-                "DJANGO_SETTINGS_MODULE": "psmprj.settings.settings"
-              }            
-        },     
-        {
-            "name": "Django: Command (prompt)",
-            "type": "python",
-            "request": "launch",
-            "program": "${workspaceFolder}/dj.py",  // for running command with input arguments
-            "args": ["${input:mgmtArgs}"],
-            "console": "integratedTerminal",
-            "django": true,
-        },
-        {
-            "name": "Run Any Python Script (input string)",
-            "type": "python",
-            "request": "launch",
-            "program": "${workspaceFolder}/scripts/run_script.py",
-            "args": ["${input:scriptWithArgs}"],
-            "console": "integratedTerminal"
-        },                   
-        {
-            "name": "vf Windows Launcher",
-            "type": "python",
-            "request": "launch",
-            "python": "${workspaceFolder}/.venv/Scripts/python",           // for windows
-            "program": "${workspaceFolder}/manage.py",
-            "args": [
-                "runserver", "0.0.0.0:8000"
-                // "update_path"
-                // "ldap_update"
-                // "add_fixtures"
-                // "createtheme", "--primary-color=1b5e20", "--secondary-color=01579b"
-                // "createtheme", "--primary-color=003984", "--secondary-color=ffde03", "--success-color=3700b3", "--error-color=b00020", "--link-color=6200ee", "--dest=hmg"
-            ],
-            "django": true,
-            "justMyCode": true
-        },
-        {
-            "name": "vf Windows Shell",
-            "type": "python",
-            "request": "launch",
-            "python": "${workspaceFolder}/.venv/Scripts/python",           // for windows
-            "program": "${workspaceFolder}/manage.py",
-            "args": [
-                "shell"
-            ],
-            "django": true,
-            "justMyCode": true
-        },
-        {
-            "name": "vf Windows Collect Static",
-            "type": "python",
-            "request": "launch",
-            "python": "${workspaceFolder}/.venv/Scripts/python",           // for windows
-            "program": "${workspaceFolder}/manage.py",
-            "args": [
-                "collectstatic", "--no-input"
-            ],
-            "django": true,
-            "justMyCode": true
-        },
-        {
-            "name": "Profile Django",
-            "type": "python",
-            "request": "launch",
-            "program": "${workspaceFolder}/manage.py",
-            "args": ["runserver","8000"],
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "subProcess": true,
-            "purpose": ["profile"]
-        }
-    ]
+  "version": "0.2.0",
+  "inputs": [
+    {
+      "id": "mgmtArgs",
+      "type": "promptString",
+      "description": "manage.py command + its flags (e.g. test_agent --username alice --message \"hi\")"
+    },
+    {
+      "id": "scriptWithArgs",
+      "type": "promptString",
+      "description": "Enter script path and arguments (e.g. apps/foo.py --foo bar)"
+    }
+  ],
+  "configurations": [
+    {
+      "name": "Linux: Django Runserver",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/manage.py",
+      "args": ["runserver", "0.0.0.0:8000"],
+      "console": "integratedTerminal",
+      "django": true,
+      "justMyCode": true
+    },
+    {
+      "name": "Linux: ASGI with Uvicorn",
+      "type": "python",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "psmprj.asgi:application",
+        "--host", "127.0.0.1",
+        "--port", "8000"
+      ],
+      "env": {
+        // "DJANGO_SETTINGS_MODULE": "psmprj.settings.settings"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Django Management Command (prompt)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/dj.py",
+      "args": ["${input:mgmtArgs}"],
+      "console": "integratedTerminal",
+      "django": true
+    },
+    {
+      "name": "Run Any Python Script",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/run_script.py",
+      "args": ["${input:scriptWithArgs}"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Windows: Django Runserver",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/manage.py",
+      "args": ["runserver", "0.0.0.0:8000"],
+      "console": "integratedTerminal",
+      "django": true,
+      "justMyCode": true
+    },
+    {
+      "name": "Windows: Django Shell",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/manage.py",
+      "args": ["shell"],
+      "console": "integratedTerminal",
+      "django": true,
+      "justMyCode": true
+    },
+    {
+      "name": "Windows: Collect Static",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/manage.py",
+      "args": ["collectstatic", "--no-input"],
+      "console": "integratedTerminal",
+      "django": true,
+      "justMyCode": true
+    },
+    {
+      "name": "Profile Django",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/manage.py",
+      "args": ["runserver", "8000"],
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "subProcess": true,
+      "purpose": ["profile"]
+    }
+  ]
 }

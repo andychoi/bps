@@ -2,6 +2,7 @@
 from uuid import UUID
 from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib import messages
+from .models import PlanningSession, PlanningStage
 from django.urls import reverse
 from django.utils import timezone
 from django.views.generic import TemplateView
@@ -24,6 +25,22 @@ from django.forms import modelform_factory
 from django.shortcuts import render
 from django.urls import reverse
 
+def advance_stage(request, session_id):
+    sess = get_object_or_404(PlanningSession, pk=session_id)
+    next_stage = (
+        PlanningStage.objects
+        .filter(order__gt=sess.current_stage.order)
+        .order_by("order")
+        .first()
+    )
+    if not next_stage:
+        messages.warning(request, "Already at final stage.")
+    else:
+        sess.current_step = next_stage
+        sess.save(update_fields=["current_stage"])
+        messages.success(request, f"Moved to stage: {next_stage.name}")
+
+    return redirect("bps:session_detail", pk=session_id)
 # Dummy Inbox View
 def inbox(request):
     # Breadcrumbs for navigation

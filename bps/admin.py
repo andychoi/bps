@@ -9,7 +9,8 @@ from .models import (
     SLAProfile, KeyFigure,
     PlanningLayout, PlanningDimension, PlanningKeyFigure, PlanningLayoutYear,
     Period, PeriodGrouping,
-    PlanningSession, DataRequest, PlanningFact
+    PlanningSession, DataRequest, PlanningFact, 
+    PlanningStage, Skill, Resource
 )
 
 # ── Units of Measure & Conversion Rates ────────────────────────────────────
@@ -76,6 +77,19 @@ class InfoObjectAdmin(admin.ModelAdmin):
     ordering       = ('order', 'code')
 
 admin.site.register([Year, Version, OrgUnit, Account, Service, CBU, CostCenter, InternalOrder], InfoObjectAdmin)
+
+# Register Skill & Resource
+@admin.register(Skill)
+class SkillAdmin(admin.ModelAdmin):
+    list_display = ('name',)
+    search_fields = ('name',)
+
+@admin.register(Resource)
+class ResourceAdmin(admin.ModelAdmin):
+    list_display = ('unique_id','display_name','resource_category','current_skill','current_level')
+    list_filter = ('resource_category','current_skill','current_level')
+    search_fields = ('unique_id','display_name')
+
 
 @admin.register(SLAProfile)
 class SLAProfileAdmin(admin.ModelAdmin):
@@ -150,7 +164,7 @@ class FactInline(admin.TabularInline):
     extra = 0
     readonly_fields = (
         'request','session','version','year','period','org_unit',
-        'service','account','driver_refs',
+        'service','account','dimension_values',
         'key_figure','value','uom','ref_value','ref_uom'
     )
     fields = readonly_fields
@@ -172,31 +186,40 @@ class PlanningFactAdmin(admin.ModelAdmin):
         'service','account','key_figure','value','uom','ref_value','ref_uom'
     )
     list_filter   = ('year','period','uom','service','account','key_figure')
-    search_fields = ('driver_refs',)
+    search_fields = ('dimension_values',)
     readonly_fields = ('request',)
 
 
 @admin.register(Position)
 class PositionAdmin(admin.ModelAdmin):
-    list_display = ('year', 'code', 'skill', 'level', 'fte', 'is_open')
-    list_filter = ('year', 'skill', 'level', 'is_open')
-    search_fields = ('code', 'skill', 'level')
+    list_display = ('year', 'code', 'name', 'skill', 'level', 'orgunit', 'fte', 'is_open', 'intended_resource_category', 'filled_by_resource')
+    list_filter = ('year', 'skill', 'level', 'is_open', 'intended_resource_category')
+    search_fields = ('code', 'name', 'skill__name', 'level')
     ordering = ('year__code', 'skill', 'level', 'code')
     fieldsets = (
         (None, {
-            'fields': ('year', 'code', 'name', 'skill', 'level', 'fte', 'is_open')
+            'fields': (
+                'year', 'code', 'name', 'skill', 'level', 'orgunit',
+                'fte', 'is_open', 'intended_resource_category', 'filled_by_resource'
+            )
         }),
     )
 
 
 @admin.register(RateCard)
 class RateCardAdmin(admin.ModelAdmin):
-    list_display = ('year', 'skill', 'resource_type', 'country', 'efficiency_factor', 'hourly_rate')
-    list_filter = ('year', 'skill', 'resource_type', 'country')
-    search_fields = ('skill', 'country', 'resource_type')
-    ordering = ('year__code', 'skill', 'resource_type', 'country')
+    list_display = ('skill', 'level', 'resource_type', 'country', 'efficiency_factor')
+    list_filter = ('skill', 'level', 'resource_type', 'country')
+    search_fields = ('skill__name', 'country', 'resource_type')
+    ordering = ('skill', 'level', 'resource_type', 'country')
     fieldsets = (
         (None, {
-            'fields': ('year', 'skill', 'resource_type', 'country', 'efficiency_factor', 'hourly_rate')
+            'fields': ('skill', 'level', 'resource_type', 'country', 'efficiency_factor')
         }),
     )
+
+@admin.register(PlanningStage)
+class PlanningStageAdmin(admin.ModelAdmin):
+    list_display = ('order','code','name','can_run_in_parallel')
+    list_editable = ('order','name','can_run_in_parallel')
+    ordering = ('order',)

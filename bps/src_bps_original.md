@@ -2,7 +2,7 @@
 
 ---
 
-### `api.py`
+### `api/api.py`
 ```python
 from decimal import Decimal
 from django.shortcuts import get_object_or_404
@@ -68,46 +68,43 @@ class PlanningGridBulkUpdateView(APIView):
 ### `api/serializers.py`
 ```python
 from rest_framework import serializers
-from bps.models import PlanningFact
+from bps.models import PlanningFact, Period
 class PlanningFactSerializer(serializers.ModelSerializer):
-    org_unit = serializers.SerializerMethodField()
-    service = serializers.SerializerMethodField()
+    org_unit   = serializers.SerializerMethodField()
+    service    = serializers.SerializerMethodField()
     key_figure = serializers.SerializerMethodField()
-    period = serializers.SerializerMethodField()
+    period     = serializers.SerializerMethodField()
     class Meta:
-        model = PlanningFact
-        fields = [
-            "id",
-            "value",
-            "ref_value",
-            "org_unit",
-            "service",
-            "key_figure",
-            "period",
-        ]
+        model  = PlanningFact
+        fields = ["id","value","ref_value","org_unit","service","key_figure","period"]
     def get_org_unit(self, obj):
-        return {"id": obj.org_unit.id, "code": obj.org_unit.code, "name": obj.org_unit.name} if obj.org_unit else None
+        return {"id": obj.org_unit.id, "name": obj.org_unit.name}
     def get_service(self, obj):
-        return {"id": obj.service.id, "code": obj.service.code, "name": obj.service.name} if obj.service else None
+        return obj.service and {"id": obj.service.id, "name": obj.service.name}
     def get_key_figure(self, obj):
-        return {"id": obj.key_figure.id, "code": obj.key_figure.code, "name": obj.key_figure.name} if obj.key_figure else None
+        return {"id": obj.key_figure.id, "code": obj.key_figure.code}
     def get_period(self, obj):
-        return {"id": obj.period.id, "code": obj.period.code, "name": obj.period.name} if obj.period else None
+        return {"id": obj.period.id, "code": obj.period.code, "name": obj.period.name}
 class PlanningFactPivotRowSerializer(serializers.Serializer):
-    org_unit = serializers.CharField()
-    service = serializers.CharField()
+    org_unit   = serializers.CharField()
+    service    = serializers.CharField(allow_null=True)
     key_figure = serializers.CharField()
+    def to_representation(self, instance):
+        return instance
 ```
 
 ### `api/urls.py`
 ```python
 from django.urls import path
-from .views_manual import PlanningGridAPIView, PlanningGridBulkUpdateAPIView
+from .views_manual import ManualPlanningGridAPIView, PlanningGridAPIView, PlanningGridBulkUpdateAPIView
 from .views import PlanningFactPivotedAPIView
+app_name = "bps_api"
 urlpatterns = [
-    path("bps_planning_grid", PlanningGridAPIView.as_view(), name="bps_planning_grid"),
-    path("bps_planning_grid_update", PlanningGridBulkUpdateAPIView.as_view(), name="bps_planning_grid_update"),
-    path("bps_planning_pivot/", PlanningFactPivotedAPIView.as_view(), name="bps-planning-grid"),
+    path(
+        "bps_planning_grid/", PlanningGridAPIView.as_view(), name="bps_planning_grid",),
+    path('planning-grid/', ManualPlanningGridAPIView.as_view(), name='manual-planning-grid'),
+    path("bps_planning_grid_update/", PlanningGridBulkUpdateAPIView.as_view(), name="bps_planning_grid_update",),
+    path("bps_planning_pivot/", PlanningFactPivotedAPIView.as_view(), name="bps_planning_pivot",),
 ]
 ```
 
@@ -135,7 +132,7 @@ class PlanningFactPivotedAPIView(APIView):
         for k, v in request.query_params.items():
             if k.startswith("driver_"):
                 driver_key = k.replace("driver_", "")
-                facts = facts.filter(driver_refs__has_key=driver_key).filter(driver_refs__contains={driver_key: v})
+                facts = facts.filter(dimension_values__has_key=driver_key).filter(dimension_values__contains={driver_key: v})
         use_ref_value = request.query_params.get("ref") == "1"
         pivoted = pivot_facts_grouped(facts, use_ref_value=use_ref_value)
         serializer = PlanningFactPivotRowSerializer(pivoted, many=True)
@@ -144,38 +141,154 @@ class PlanningFactPivotedAPIView(APIView):
 
 ### `api/views_manual.py`
 ```python
+from django.db.models import Q
+from django.shortcuts import get_object_or_404
+from django.db import transaction
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from bps.models import PlanningLayoutYear, PlanningFact, KeyFigure, Period
-from .serializers import PlanningFactSerializer
-from django.shortcuts import get_object_or_404
+from decimal import Decimal
+from bps.models import PlanningLayoutYear, PlanningFact, PlanningLayoutDimension, Version
+from .serializers import PlanningFactSerializer, PlanningFactPivotRowSerializer
+from .utils import pivot_facts_grouped
+class ManualPlanningGridAPIView(APIView):
+    def get(self, request):
+        layout_id = request.query_params.get('layout')
+        year_id   = request.query_params.get('year')
+        version   = request.query_params.get('version')
+        use_ref   = request.query_params.get('ref') == '1'
+        ly = get_object_or_404(PlanningLayoutYear, pk=layout_id)
+        facts = PlanningFact.objects.filter(session__layout_year=ly)
+        if year_id:
+            facts = facts.filter(year_id=year_id)
+        if version:
+            facts = facts.filter(version__code=version)
+        pivot = pivot_facts_grouped(facts, use_ref_value=use_ref)
+        return Response(pivot)
+    @transaction.atomic
+    def post(self, request):
+        payload = request.data
+        layout_id = payload.get('layout')
+        ly = get_object_or_404(PlanningLayoutYear, pk=layout_id)
+        errors = []
+        for upd in payload.get('updates', []):
+            try:
+                fact = PlanningFact.objects.get(pk=upd['id'], session__layout_year=ly)
+                if upd['field'] not in ('value','ref_value'):
+                    raise ValueError(f"Cannot edit field {upd['field']}")
+                setattr(fact, upd['field'], Decimal(upd['value']))
+                fact.save()
+            except Exception as e:
+                errors.append({'id': upd.get('id'), 'error': str(e)})
+        if errors:
+            return Response({'errors': errors}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 class PlanningGridAPIView(APIView):
     def get(self, request):
-        layout_id = request.query_params.get("layout")
-        if not layout_id:
-            return Response({"error": "Missing layout param"}, status=status.HTTP_400_BAD_REQUEST)
-        layout_year = get_object_or_404(PlanningLayoutYear, pk=layout_id)
-        facts = (
-            PlanningFact.objects
-            .filter(session__layout_year=layout_year)
-            .select_related("period", "key_figure", "org_unit", "service")
-        )
-        serializer = PlanningFactSerializer(facts, many=True)
-        return Response(serializer.data)
+        base_id    = request.query_params.get("base") or request.query_params.get("layout")
+        compare_id = request.query_params.get("compare")
+        if not base_id:
+            return Response(
+                {"error": "Missing 'base' (or legacy 'layout') query parameter"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        base_ly = get_object_or_404(PlanningLayoutYear, pk=base_id)
+        allowed_versions = Version.objects.filter(
+            Q(is_public=True) | Q(created_by=request.user)
+        ).values_list("pk", flat=True)
+        if base_ly.version_id not in allowed_versions:
+            return Response(
+                {"error": "You do not have permission to view the base layout."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        compare_ly = None
+        if compare_id:
+            compare_ly = get_object_or_404(PlanningLayoutYear, pk=compare_id)
+            if compare_ly.version_id not in allowed_versions:
+                return Response(
+                    {"error": "You do not have permission to view the compare layout."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        base_qs = PlanningFact.objects.filter(
+            session__layout_year=base_ly
+        ).select_related("period", "key_figure", "org_unit", "service")
+        compare_qs = None
+        if compare_ly:
+            compare_qs = PlanningFact.objects.filter(
+                session__layout_year=compare_ly
+            ).select_related("period", "key_figure", "org_unit", "service")
+        rows = {}
+        def ingest(qs, tag):
+            for f in qs:
+                org = f.org_unit.code
+                svc = f.service.code if f.service else ""
+                key = (org, svc)
+                row = rows.setdefault(key, {
+                    "org_unit": f.org_unit.name,
+                    "service":  f.service.name if f.service else None,
+                })
+                col = f"M{f.period.code}_{f.key_figure.code}"
+                cell = row.setdefault(col, {})
+                cell[tag] = float(f.value)
+        ingest(base_qs,   "base")
+        if compare_qs:
+            ingest(compare_qs, "compare")
+        return Response({"data": list(rows.values())})
 class PlanningGridBulkUpdateAPIView(APIView):
     def patch(self, request):
-        updates = request.data.get("updates")
-        if not isinstance(updates, list):
-            return Response({"error": "Expected list of updates"}, status=status.HTTP_400_BAD_REQUEST)
-        for row in updates:
-            fact_id = row.get("id")
-            value = row.get("value")
-            field = row.get("field")
-            if not fact_id or field not in ["value", "ref_value"]:
+        layout_id   = request.data.get("layout")
+        action      = request.data.get("action_type", "DELTA").upper()
+        version     = request.data.get("version")
+        year_code   = request.data.get("year")
+        updates     = request.data.get("updates", [])
+        ly = get_object_or_404(PlanningLayoutYear, pk=layout_id)
+        facts_qs = PlanningFact.objects.filter(session__layout_year=ly)
+        if version:
+            facts_qs = facts_qs.filter(version__code=version)
+        if year_code:
+            facts_qs = facts_qs.filter(year__code=year_code)
+        if action == "RESET":
+            facts_qs.update(value=0, ref_value=0)
+        successful, errors = 0, []
+        dims = { d.content_type.model: d for d in ly.layout_dimensions.all() }
+        for upd in updates:
+            fact_id = upd.get("id")
+            field   = upd.get("field")
+            val      = upd.get("value")
+            if field not in ("value", "ref_value") or not fact_id:
+                errors.append({"update": upd, "error": "Invalid payload"})
                 continue
-            PlanningFact.objects.filter(id=fact_id).update(**{field: value})
-        return Response({"updated": len(updates)}, status=status.HTTP_200_OK)
+            try:
+                fact = PlanningFact.objects.select_related(
+                    "org_unit", "service", "key_figure", "period"
+                ).get(pk=fact_id, session__layout_year=ly)
+            except PlanningFact.DoesNotExist:
+                errors.append({"update": upd, "error": "Fact not found"})
+                continue
+            for ld in dims.values():
+                model_name = ld.content_type.model
+                if not ld.is_row:
+                    continue
+                inst = getattr(fact, model_name, None)
+                if not inst:
+                    continue
+                if ld.allowed_values and inst.pk not in ld.allowed_values:
+                    raise ValueError(f"{model_name} {inst} not in allowed_values")
+                if ld.filter_criteria:
+                    Model = ld.content_type.model_class()
+                    if not Model.objects.filter(pk=inst.pk, **ld.filter_criteria).exists():
+                        raise ValueError(
+                            f"{model_name} {inst} fails filter {ld.filter_criteria}"
+                        )
+            setattr(fact, field, Decimal(str(val)))
+            fact.save(update_fields=[field])
+            successful += 1
+        if errors:
+            return Response(
+                {"updated": successful, "errors": errors},
+                status=status.HTTP_207_MULTI_STATUS
+            )
+        return Response({"updated": successful}, status=status.HTTP_200_OK)
 ```
 
 ### `apps.py`
@@ -312,7 +425,7 @@ class FactForm(forms.ModelForm):
     class Meta:
         model = PlanningFact
         fields = [
-            'service', 'account', 'driver_refs',
+            'service', 'account', 'dimension_values',
             'key_figure', 'value', 'uom',
             'ref_value', 'ref_uom'
         ]
@@ -330,7 +443,7 @@ class FactForm(forms.ModelForm):
             Row(
                 Column('service',   css_class='col-md-4'),
                 Column('account',   css_class='col-md-4'),
-                Column('driver_refs', css_class='col-md-4'),
+                Column('dimension_values', css_class='col-md-4'),
             ),
             Row(
                 Column('key_figure', css_class='col-md-4'),
@@ -470,22 +583,25 @@ from django.apps import apps
 from django.db.models import Sum, Avg, Min, Max, Q
 from bps.models import (
     PlanningFact, Formula, Constant, SubFormula,
-    FormulaRun, FormulaRunEntry, ReferenceData
+    FormulaRun, FormulaRunEntry, ReferenceData, Period
 )
 _AGG_FUNCS = {
-    'SUM': Sum, 'AVG': Avg, 'MIN': Min, 'MAX': Max
+    'SUM': Sum,
+    'AVG': Avg,
+    'MIN': Min,
+    'MAX': Max,
 }
 class FormulaExecutor:
     _re_refdata = re.compile(r"REF\('([^']+)'\s*,\s*([^\)]+)\)")
+    _re_subf   = re.compile(r"\$(\w+)")
+    _re_const  = re.compile(r"\b[A-Z_][A-Z0-9_]*\b")
+    _re_ref    = re.compile(r"\[(.*?)\]\.\?\[(.*?)\]")
     def __init__(self, formula: Formula, session, period: str, preview: bool=False):
         self.formula = formula
         self.session = session
         self.period  = period
         self.preview = preview
         self.run     = None
-        self._re_subf = re.compile(r"\$(\w+)")
-        self._re_const= re.compile(r"\b[A-Z_][A-Z0-9_]*\b")
-        self._re_ref  = re.compile(r"\[(.*?)\]\.\?\[(.*?)\]")
         self.dim_cts = list(formula.dimensions.all())
     def execute(self):
         self.run = FormulaRun.objects.create(formula=self.formula,
@@ -507,7 +623,7 @@ class FormulaExecutor:
         tgt, src = map(str.strip, expr.split('=',1))
         key_fig, tgt_dims = self._parse_ref(tgt, dims_map)
         src_eval = self._replace_refs_with_values(src, dims_map)
-        result = self._safe_eval(src_eval, dims_map)
+        result   = self._safe_eval(src_eval, dims_map)
         rec = self._get_record(key_fig, tgt_dims, create=not self.preview)
         old = getattr(rec, key_fig, 0)
         if not self.preview:
@@ -539,12 +655,13 @@ class FormulaExecutor:
         return tval if cond else fval
     def __case__(self, arms: List[str]):
         for arm in arms:
-            if arm.strip().upper().startswith("WHEN"):
-                _, cond, _, val = re.split(r"\s+", arm, maxsplit=3)
+            text = arm.strip()
+            if text.upper().startswith("WHEN"):
+                _, cond, _, val = re.split(r"\s+", text, maxsplit=3)
                 if self._safe_eval(cond, {}):
                     return self._safe_eval(val, {})
-            elif arm.strip().upper().startswith("ELSE"):
-                return self._safe_eval(arm.split(None,1)[1], {})
+            elif text.upper().startswith("ELSE"):
+                return self._safe_eval(text.split(None,1)[1], {})
         return Decimal('0')
     def _parse_ref(self, token: str, dims_map: Dict[str,Any]):
         m = self._re_ref.match(token)
@@ -553,20 +670,20 @@ class FormulaExecutor:
         for d in dims.split(','):
             name,val = d.split('=')
             name,val = name.strip(), val.strip()
-            if val == "$LOOP":
+            if val == '$LOOP':
                 inst = dims_map[name]
             else:
                 inst = apps.get_model('bps',name).objects.get(pk=int(val))
             fldmap[name.lower()] = inst
         return kf, fldmap
-    def _replace_refs_with_values(self, expr: str, dims_map: Dict[str,Any]):
+    def _replace_refs_with_values(self, expr: str, dims_map: Dict[str,Any]) -> str:
         def repl(m):
             dims, k = m.groups()
             fkwargs = {}
             for d in dims.split(','):
                 n,v = d.split('=')
                 n,v = n.strip(), v.strip()
-                if v == "$LOOP":
+                if v == '$LOOP':
                     inst = dims_map[n]
                 else:
                     inst = apps.get_model('bps',n).objects.get(pk=int(v))
@@ -574,105 +691,125 @@ class FormulaExecutor:
             return f"__ref__('{k}',{fkwargs})"
         return self._re_ref.sub(repl, expr)
     def _safe_eval(self, expr: str, dims_map: Dict[str,Any]) -> Decimal:
+        def shift_func(k, offset):
+            return self._shift(k, offset, dims_map)
+        def lookup_func(k, **overrides):
+            return self._lookup(k, dims_map, overrides)
         ns = {
             '__if__': self.__if__,
             '__case__': self.__case__,
             '__ref__': lambda k, kwargs: self._aggregate_or_fetch(k, kwargs),
+            'SHIFT': shift_func,
+            'LOOKUP': lookup_func,
         }
         node = ast.parse(expr, mode='eval').body
-        def _eval(node):
-            if isinstance(node, ast.Call):
-                func = _eval(node.func)
-                args = [_eval(a) for a in node.args]
-                return func(*args)
-            if isinstance(node, ast.BinOp):
+        def _eval(n):
+            if isinstance(n, ast.Call):
+                func = _eval(n.func)
+                args = [_eval(a) for a in n.args]
+                kwargs = {kw.arg: _eval(kw.value) for kw in n.keywords}
+                return func(*args, **kwargs)
+            if isinstance(n, ast.BinOp):
                 return {
                   ast.Add: operator.add,
                   ast.Sub: operator.sub,
                   ast.Mult: operator.mul,
                   ast.Div: operator.truediv,
                   ast.Pow: operator.pow,
-                }[type(node.op)](_eval(node.left), _eval(node.right))
-            if isinstance(node, ast.UnaryOp):
-                return operator.neg(_eval(node.operand))
-            if isinstance(node, ast.Name):
-                return ns[node.id]
-            if isinstance(node, ast.Constant):
-                return Decimal(str(node.value))
-            raise ValueError("Unsupported AST node")
+                }[type(n.op)](_eval(n.left), _eval(n.right))
+            if isinstance(n, ast.UnaryOp):
+                return operator.neg(_eval(n.operand))
+            if isinstance(n, ast.Name):
+                return ns[n.id]
+            if isinstance(n, ast.Constant):
+                return Decimal(str(n.value))
+            raise ValueError(f"Unsupported AST node: {n}")
         return Decimal(str(round(_eval(node),4)))
     def _aggregate_or_fetch(self, kf: str, fkwargs: Dict[str,Any]) -> Decimal:
-        for fn in _AGG_FUNCS:
-            if kf.upper().startswith(fn+':'):
+        return self._aggregate_or_fetch_for_period(kf, fkwargs, self.period)
+    def _aggregate_or_fetch_for_period(self, kf: str, fkwargs: Dict[str,Any], period_code: str) -> Decimal:
+        for fn, aggfunc in _AGG_FUNCS.items():
+            if kf.upper().startswith(fn + ':'):
                 real_kf = kf.split(':',1)[1]
-                agg = _AGG_FUNCS[fn]('value')
+                agg = aggfunc('value')
                 qs = PlanningFact.objects.filter(
                     session=self.session,
-                    period=self.period,
+                    period__code=period_code,
                     key_figure__code=real_kf,
-                    **{f"{dim}":inst for dim,inst in fkwargs.items()}
+                    **{dim:inst for dim,inst in fkwargs.items()}
                 ).aggregate(agg)
                 return Decimal(str(qs[f"value__{fn.lower()}"] or 0))
         rec = PlanningFact.objects.filter(
             session=self.session,
-            period=self.period,
+            period__code=period_code,
             key_figure__code=kf,
-            **{f"{dim}":inst for dim,inst in fkwargs.items()}
+            **{dim:inst for dim,inst in fkwargs.items()}
         ).first()
         return rec.value if rec else Decimal('0')
-    def _get_record(self, kf: str, dims: Dict[str,Any], create=False):
-        qs = PlanningFact.objects.filter(session=self.session,
-                                         period=self.period,
-                                         key_figure__code=kf,
-                                         **{f"{dim}":inst for dim,inst in dims.items()})
-        rec = qs.first()
-        if not rec and create:
-            rec = PlanningFact(
-                request=self.run.formula,
-                session=self.session,
-                period=self.period,
-                **{dim:inst for dim,inst in dims.items()},
-                key_figure=apps.get_model('bps','KeyFigure').objects.get(code=kf),
-                value=Decimal('0')
-            )
-            rec.save()
-        return rec
-    def _replace_reference_data(self, expr: str, dims_map: dict) -> str:
-        def repl(m):
-            ref_name = m.group(1)
-            dims_spec= m.group(2)
-            filters = {}
-            for part in dims_spec.split(','):
-                name,val = part.split('=')
-                name, val = name.strip(), val.strip()
-                if val == '$LOOP':
-                    inst = dims_map[name]
-                else:
-                    inst = apps.get_model('bps',name).objects.get(pk=int(val))
-                filters[name.lower()] = inst
-            ref = ReferenceData.objects.get(name=ref_name)
-            agg = ref.fetch_reference_fact(**filters)
-            return str(agg.get('value__sum') or 0)
-        return self._re_refdata.sub(repl, expr)
+    def _shift(self, kf: str, offset: Any, dims_map: Dict[str,Any]) -> Decimal:
+        all_codes = list(Period.objects.order_by('order').values_list('code', flat=True))
+        try:
+            idx = all_codes.index(self.period)
+        except ValueError:
+            return Decimal('0')
+        ni = idx + int(offset)
+        if ni < 0 or ni >= len(all_codes):
+            return Decimal('0')
+        new_period = all_codes[ni]
+        return self._aggregate_or_fetch_for_period(kf, dims_map, new_period)
+    def _lookup(self, kf: str, base_dims: Dict[str,Any], overrides: Dict[str,Any]) -> Decimal:
+        dims = base_dims.copy()
+        for dim_name, val in overrides.items():
+            try:
+                inst = apps.get_model('bps', dim_name).objects.get(pk=int(val))
+                dims[dim_name] = inst
+            except Exception:
+                continue
+        return self._aggregate_or_fetch_for_period(kf, dims, self.period)
 ```
 
 ### `manual_planning.py`
 ```python
 from django.views.generic import TemplateView
-from bps.models import PlanningLayoutYear
-class ManualPlanningView(TemplateView):
-    template_name = "bps/manual_planning.html"
+from django.shortcuts import redirect, get_object_or_404
+from bps.models import PlanningLayoutYear, Year, Version, Period
+class ManualPlanningSelectView(TemplateView):
+    template_name = 'bps/manual_planning_select.html'
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        ctx["layouts"] = PlanningLayoutYear.objects.select_related("layout", "year", "version")
-        ctx["selected_layout"] = self.request.GET.get("layout_year")
+        ctx['layouts'] = PlanningLayoutYear.objects.select_related('layout','year','version')
+        return ctx
+class ManualPlanningView(TemplateView):
+    template_name = 'bps/manual_planning.html'
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        layout_id  = self.kwargs.get('layout_id')
+        year_id    = self.kwargs.get('year_id')
+        version_id = self.kwargs.get('version_id')
+        if not (layout_id and year_id and version_id):
+            return redirect('bps:manual-planning-select')
+        ly = get_object_or_404(
+            PlanningLayoutYear,
+            layout_id=layout_id,
+            year_id=year_id,
+            version_id=version_id
+        )
+        ctx.update({
+            'layout_year': ly,
+            'layout':      ly.layout,
+            'year':        ly.year,
+            'version':     ly.version,
+            'periods':     Period.objects.order_by('order'),
+        })
         return ctx
 ```
 
 ### `models.py`
 ```python
 from uuid import uuid4
-from django.db import models
+from django.db import models, transaction
+from django.contrib.postgres.fields import JSONField
+from django.shortcuts import get_object_or_404
 from django.db.models import Sum
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
@@ -686,112 +823,16 @@ class UnitOfMeasure(models.Model):
     def __str__(self):
         return self.code
 class ConversionRate(models.Model):
-    from_uom = models.ForeignKey(UnitOfMeasure, on_delete=models.CASCADE,
-                                 related_name='conv_from')
-    to_uom   = models.ForeignKey(UnitOfMeasure, on_delete=models.CASCADE,
-                                 related_name='conv_to')
+    from_uom = models.ForeignKey(UnitOfMeasure, on_delete=models.CASCADE, related_name='conv_from')
+    to_uom   = models.ForeignKey(UnitOfMeasure, on_delete=models.CASCADE, related_name='conv_to')
     factor   = models.DecimalField(max_digits=18, decimal_places=6,
                                    help_text="Multiply a from_uom value by this to get to_uom")
     class Meta:
         unique_together = ('from_uom','to_uom')
     def __str__(self):
         return f"1 {self.from_uom} → {self.factor} {self.to_uom}"
-class InfoObject(models.Model):
-    code        = models.CharField(max_length=20, unique=True)
-    name        = models.CharField(max_length=50)
-    description = models.TextField(blank=True)
-    order       = models.IntegerField(default=0,
-                      help_text="Controls ordering in UIs")
-    class Meta:
-        abstract = True
-        ordering = ['order', 'code']
-    def __str__(self):
-        return self.name
-class Year(InfoObject):
-    pass
-class Version(InfoObject):
-    pass
-class OrgUnit(MP_Node, InfoObject):
-    head_user      = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL, null=True, blank=True,
-        help_text="OrgUnit lead who must draft and approve"
-    )
-    cc_code    = models.CharField(max_length=10, blank=True)
-    node_order_by = ['order', 'code']
-class Account(InfoObject):
-    pass
-class Service(InfoObject):
-    category         = models.CharField(max_length=50)
-    subcategory      = models.CharField(max_length=50)
-    related_services = models.ManyToManyField('self', blank=True)
-    CRITICALITY_CHOICES = [('H','High'),('M','Medium'),('L','Low')]
-    criticality      = models.CharField(max_length=1, choices=CRITICALITY_CHOICES)
-    sla_response     = models.DurationField(help_text="e.g. PT2H for 2 hours")
-    sla_resolution   = models.DurationField(help_text="e.g. PT4H for 4 hours")
-    availability     = models.DecimalField(max_digits=5, decimal_places=3,
-                                           help_text="e.g. 99.900")
-    SUPPORT_HOUR_CHOICES = [
-        ('24x7','24×7'),
-        ('9x5','9×5 Mon–Fri'),
-        ('custom','Custom')
-    ]
-    support_hours    = models.CharField(max_length=10,
-                                        choices=SUPPORT_HOUR_CHOICES)
-    orgunit      = models.ForeignKey('OrgUnit',
-                                         on_delete=models.SET_NULL,
-                                         null=True, blank=True)
-    owner            = models.ForeignKey(settings.AUTH_USER_MODEL,
-                                         on_delete=models.SET_NULL,
-                                         null=True, blank=True)
-    is_active        = models.BooleanField(default=True)
-    class Meta:
-        ordering = ['category','subcategory','code']
-    def __str__(self):
-        return f"{self.code} – {self.name}"
-class CostCenter(InfoObject):
-    pass
-class InternalOrder(InfoObject):
-    cc_code    = models.CharField(max_length=10, blank=True)
-class Position(InfoObject):
-    code        = models.CharField(max_length=20)
-    year        = models.ForeignKey(Year, on_delete=models.CASCADE)
-    skill_group = models.CharField(max_length=50)
-    level       = models.CharField(max_length=20)
-    fte         = models.FloatField(default=1.0)
-    is_open     = models.BooleanField(default=False)
-    class Meta(InfoObject.Meta):
-        unique_together = ('year', 'code')
-        ordering = ['year__code', 'order', 'code']
-    def __str__(self):
-        status = 'Open' if self.is_open else 'Filled'
-        return f"[{self.year.code}] {self.code} ({self.skill_group}/{self.level}) – {status}"
-class CBU(InfoObject):
-    group       = models.CharField(max_length=50, blank=True)
-    TIER_CHOICES = [('1','Tier-1'),('2','Tier-2'),('3','Tier-3')]
-    tier        = models.CharField(max_length=1, choices=TIER_CHOICES)
-    sla_profile = models.ForeignKey('SLAProfile', on_delete=models.SET_NULL,
-                                    null=True, blank=True)
-    region      = models.CharField(max_length=50, blank=True)
-    is_active   = models.BooleanField(default=True)
-    node_order_by = ['cbu_code']
-    def __str__(self):
-        return f"{self.code} – {self.name}"
-class RateCard(models.Model):
-    VENDOR_CHOICES = [('CON','Contractor'), ('MSP','MSP')]
-    year              = models.ForeignKey(Year, on_delete=models.CASCADE)
-    skill_group       = models.CharField(max_length=50)
-    vendor_type       = models.CharField(max_length=20, choices=VENDOR_CHOICES)
-    country           = models.CharField(max_length=50)
-    efficiency_factor = models.DecimalField(max_digits=5, decimal_places=2,
-                                            help_text="0.00–1.00")
-    hourly_rate       = models.DecimalField(max_digits=10, decimal_places=2)
-    class Meta:
-        unique_together = ('year','skill_group','vendor_type','country')
-        ordering = ['year__code','skill_group','vendor_type','country']
-    def __str__(self):
-        return (f"[{self.year.code}] {self.vendor_type} | {self.skill_group} @ "
-                f"{self.country}: {self.hourly_rate}$/h, eff {self.efficiency_factor}")
+from .models_dimension import *
+from .models_resource import *
 class UserMaster(models.Model):
     user      = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     org_unit  = models.ForeignKey(OrgUnit, on_delete=models.SET_NULL, null=True)
@@ -828,6 +869,10 @@ class PlanningDimension(models.Model):
     is_editable = models.BooleanField(default=False)
     required = models.BooleanField(default=True)
     data_source = models.CharField(max_length=100)
+    is_navigable = models.BooleanField(default=False,
+        help_text="If true, UI should render Prev/Next controls for this dimension"
+    )
+    display_order = models.PositiveSmallIntegerField(default=0)
 class PlanningKeyFigure(models.Model):
     layout = models.ForeignKey(PlanningLayout, related_name="key_figures", on_delete=models.CASCADE)
     code = models.CharField(max_length=100)
@@ -872,6 +917,18 @@ class PeriodGrouping(models.Model):
             code  = f"{self.label_prefix}{idx}"
             buckets.append({'code':code, 'name':code, 'periods':group})
         return buckets
+class PlanningStage(models.Model):
+    code       = models.CharField(max_length=20, unique=True)
+    name       = models.CharField(max_length=100)
+    order      = models.PositiveSmallIntegerField(
+                   help_text="Determines execution order. Lower=earlier.")
+    can_run_in_parallel = models.BooleanField(
+                   default=False,
+                   help_text="If True, this step may execute alongside others.")
+    class Meta:
+        ordering = ['order']
+    def __str__(self):
+        return f"{self.order}: {self.name}"
 class PlanningSession(models.Model):
     layout_year = models.ForeignKey(PlanningLayoutYear, on_delete=models.CASCADE,
                                     related_name='sessions')
@@ -894,6 +951,7 @@ class PlanningSession(models.Model):
                                     null=True, blank=True,
                                     related_name='+')
     frozen_at   = models.DateTimeField(null=True, blank=True)
+    current_stage = models.ForeignKey(PlanningStage, on_delete=models.PROTECT, null=True, blank=True)
     class Meta:
         unique_together = ('layout_year','org_unit')
     def __str__(self):
@@ -912,16 +970,23 @@ class PlanningSession(models.Model):
         self.frozen_at = models.functions.Now()
         self.save()
 class DataRequest(models.Model):
+    ACTION_CHOICES = [
+        ('DELTA',     'Delta'),
+        ('OVERWRITE', 'Overwrite'),
+        ('RESET',     'Reset to zero'),
+    ]
     id          = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     session     = models.ForeignKey(PlanningSession, on_delete=models.CASCADE,
                                     related_name='requests')
     description = models.CharField(max_length=200, blank=True)
+    action_type = models.CharField(max_length=20,choices=ACTION_CHOICES,default='DELTA',
+        help_text="Delta: add on top of existing; Overwrite: replace; Reset: zero-out then write",
+    )
     created_by  = models.ForeignKey(settings.AUTH_USER_MODEL,
                                     on_delete=models.SET_NULL, null=True, blank=True)
     created_at  = models.DateTimeField(auto_now_add=True)
     def __str__(self): return f"{self.session} – {self.description or self.id}"
 class PlanningFact(models.Model):
-    request     = models.ForeignKey(DataRequest, on_delete=models.PROTECT)
     session     = models.ForeignKey(PlanningSession, on_delete=models.CASCADE)
     version     = models.ForeignKey(Version, on_delete=models.PROTECT)
     year        = models.ForeignKey(Year, on_delete=models.PROTECT)
@@ -929,14 +994,16 @@ class PlanningFact(models.Model):
     org_unit    = models.ForeignKey(OrgUnit, on_delete=models.PROTECT)
     service   = models.ForeignKey(Service, null=True, blank=True, on_delete=models.PROTECT)
     account   = models.ForeignKey(Account, null=True, blank=True, on_delete=models.PROTECT)
-    driver_refs = models.JSONField(default=dict, help_text="e.g. {'Position':123, 'SkillGroup':'Developer'}")
+    dimension_values = models.JSONField(default=dict,
+        help_text="Mapping of extra dimension name → selected dimension key: e.g. {'Position':123, 'SkillGroup':'Developer'}"
+    )
     key_figure  = models.ForeignKey(KeyFigure, on_delete=models.PROTECT)
     value       = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     uom         = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name='+', null=True)
     ref_value   = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     ref_uom     = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name='+', null=True)
     class Meta:
-        unique_together = ('request', 'version', 'year', 'period', 'org_unit', 'service', 'account', 'key_figure', 'driver_refs')
+        unique_together = ('request', 'version', 'year', 'period', 'org_unit', 'service', 'account', 'key_figure', 'dimension_values')
         indexes = [
             models.Index(fields=['year', 'version', 'org_unit']),
             models.Index(fields=['key_figure']),
@@ -954,11 +1021,40 @@ class PlanningFact(models.Model):
             to_uom=to_uom
         ).factor
         return round(self.value * rate, 2)
+class PlanningLayoutDimension(models.Model):
+    layout_year    = models.ForeignKey(PlanningLayoutYear,
+                                       on_delete=models.CASCADE,
+                                       related_name="layout_dimensions")
+    content_type   = models.ForeignKey(ContentType,
+                                       on_delete=models.CASCADE)
+    is_row         = models.BooleanField(default=False)
+    is_column      = models.BooleanField(default=False)
+    order          = models.PositiveSmallIntegerField(default=0,
+                        help_text="Defines the sequence in the grid")
+    allowed_values = models.JSONField(blank=True, default=list,
+                        help_text="List of allowed PKs or codes")
+    filter_criteria= models.JSONField(blank=True, default=dict,
+                        help_text="Extra filters to apply when building headers")
+class PlanningFactDimension(models.Model):
+    fact       = models.ForeignKey(PlanningFact, on_delete=models.CASCADE, related_name="fact_dimensions")
+    dimension  = models.ForeignKey(PlanningLayoutDimension, on_delete=models.PROTECT)
+    value_id   = models.PositiveIntegerField(help_text="PK of the chosen dimension value")
+class DataRequestLog(models.Model):
+    request     = models.ForeignKey(DataRequest, on_delete=models.PROTECT, related_name='log_entries')
+    fact        = models.ForeignKey(PlanningFact, on_delete=models.CASCADE)
+    old_value   = models.DecimalField(max_digits=18, decimal_places=2)
+    new_value   = models.DecimalField(max_digits=18, decimal_places=2)
+    changed_at  = models.DateTimeField(auto_now_add=True)
+    changed_by  = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+    def __str__(self):
+        return f"{self.fact}: {self.old_value} → {self.new_value}"
 class PlanningFunction(models.Model):
     FUNCTION_CHOICES = [
         ('COPY', 'Copy'),
         ('DISTRIBUTE', 'Distribute'),
         ('CURRENCY_CONVERT', 'Currency Convert'),
+        ('REPOST',     'Re-Post'),
+        ('RESET_SLICE',     'Reset Slice'),
     ]
     layout      = models.ForeignKey(PlanningLayout, on_delete=models.CASCADE)
     name        = models.CharField(max_length=50)
@@ -972,60 +1068,104 @@ class PlanningFunction(models.Model):
             return self._copy_data(session)
         if self.function_type == 'DISTRIBUTE':
             return self._distribute(session)
+        if self.function_type == 'REPOST':
+            return self._repost(session)
         if self.function_type == 'CURRENCY_CONVERT':
             return self._currency_convert(session)
-    def _copy_data(self, session):
-        from bps.models import PlanningFact
-        src_vid = self.parameters['from_version']
-        tgt_vid = self.parameters['to_version']
-        year    = self.parameters.get('year')
-        period  = self.parameters.get('period')
-        src_facts = PlanningFact.objects.filter(
-            session__layout_year__version_id=src_vid,
-            session=session,
-            year_id=year,
-            period=period
+        if self.function_type == 'RESET_SLICE':
+            return self._reset_slice(session)
+        return 0
+    def _copy_data(self, session: PlanningSession) -> int:
+        params = self.parameters
+        src_version = session.layout_year.version
+        tgt_version = get_object_or_404(Version, pk=params['to_version'])
+        tgt_ly, _ = PlanningLayoutYear.objects.get_or_create(
+            layout=session.layout_year.layout,
+            year=session.layout_year.year,
+            version=tgt_version,
         )
-        created = 0
-        for f in src_facts:
-            f.pk = None
-            f.request = None
-            f.session.layout_year.version_id = tgt_vid
-            f.save()
-            created += 1
-        return created
-    def _distribute(self, session):
-        from bps.models import PlanningFact, ReferenceData
-        by = self.parameters['by']
-        ref_name = self.parameters['reference_data']
-        ref = ReferenceData.objects.get(name=ref_name)
+        tgt_sess, _ = PlanningSession.objects.get_or_create(
+            layout_year=tgt_ly,
+            org_unit=session.org_unit,
+        )
+        new_req = DataRequest.objects.create(
+            session=tgt_sess,
+            description=f"Copy from v{src_version.code}"
+        )
+        new_facts = []
+        for fact in PlanningFact.objects.filter(session=session).iterator():
+            new_facts.append(PlanningFact(
+                request    = new_req,
+                session    = tgt_sess,
+                version    = tgt_version,
+                year       = fact.year,
+                period     = fact.period,
+                org_unit   = fact.org_unit,
+                service    = fact.service,
+                account    = fact.account,
+                dimension_values= fact.dimension_values,
+                key_figure = fact.key_figure,
+                value      = fact.value,
+                uom        = fact.uom,
+                ref_value  = fact.ref_value,
+                ref_uom    = fact.ref_uom,
+            ))
+        PlanningFact.objects.bulk_create(new_facts)
+        return len(new_facts)
+    def _distribute(self, session: PlanningSession) -> int:
+        by     = self.parameters['by']
+        ref_nm = self.parameters['reference_data']
+        ref    = get_object_or_404(ReferenceData, name=ref_nm)
         total = ref.fetch_reference_fact(**{by: None})['value__sum'] or 0
         if total == 0:
             return 0
-        qs = PlanningFact.objects.filter(session=session)
-        created = 0
-        for f in qs:
-            share = f.value / total
-            f.value = share * total
-            f.save()
-            created += 1
-        return created
-    def _currency_convert(self, session):
-        from bps.models import PlanningFact, ConversionRate, UnitOfMeasure
-        tgt = self.parameters['target_uom']
-        tgt_uom = UnitOfMeasure.objects.get(code=tgt)
+        updated = 0
+        with transaction.atomic():
+            for fact in PlanningFact.objects.filter(session=session):
+                proportion = fact.value / total
+                fact.value = proportion * total
+                fact.save(update_fields=['value'])
+                updated += 1
+        return updated
+    def _currency_convert(self, session: PlanningSession) -> int:
+        tgt_code = self.parameters['target_uom']
+        tgt_uom  = get_object_or_404(UnitOfMeasure, code=tgt_code)
         conv_map = {
-          (c.from_uom_id, c.to_uom_id): c.factor
-          for c in ConversionRate.objects.filter(to_uom=tgt_uom)
+            (c.from_uom_id, c.to_uom_id): c.factor
+            for c in ConversionRate.objects.filter(to_uom=tgt_uom)
         }
         updated = 0
-        for f in PlanningFact.objects.filter(session=session):
-            key = (f.uom_id, tgt_uom.id)
-            if key not in conv_map: continue
-            f.value = round(f.value * conv_map[key], 4)
-            f.uom = tgt_uom
-            f.save()
-            updated += 1
+        with transaction.atomic():
+            for fact in PlanningFact.objects.filter(session=session):
+                key = (fact.uom_id, tgt_uom.id)
+                if key not in conv_map:
+                    continue
+                fact.value = round(fact.value * conv_map[key], 4)
+                fact.uom   = tgt_uom
+                fact.save(update_fields=['value','uom'])
+                updated += 1
+        return updated
+    def _repost(self, session: PlanningSession) -> int:
+        last_dr = session.requests.order_by('-created_at').first()
+        if not last_dr:
+            return 0
+        new_dr = DataRequest.objects.create(
+            session     = session,
+            description = f"Re-Post of {last_dr.id}",
+            created_by  = last_dr.created_by,
+        )
+        created = 0
+        with transaction.atomic():
+            for fact in PlanningFact.objects.filter(request=last_dr):
+                fact.pk      = None
+                fact.request = new_dr
+                fact.save()
+                created += 1
+        return created
+    def _reset_slice(self, session: PlanningSession) -> int:
+        filters = self.parameters.get('filters', {})
+        qs = PlanningFact.objects.filter(session=session, **filters)
+        updated = qs.update(value=0, ref_value=0)
         return updated
 class ReferenceData(models.Model):
     name = models.CharField(max_length=100)
@@ -1084,882 +1224,209 @@ class FormulaRunEntry(models.Model):
         return f"{self.record} :: {self.key}: {self.old_value} → {self.new_value}"
 ```
 
-### `templates/bps/base.html`
-```html
-{% load static %}
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}Enterprise Planning{% endblock %}</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUa6mY5D6T+Ly2YbMkQZ6Yr6Y1YAd+0F6fqG5s5B5KRb8DXe6fVXMZV+fl1M" crossorigin="anonymous">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
-    <link href="{% static 'css/custom.css' %}" rel="stylesheet">
-    {% block extra_css %}{% endblock %}
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-light bg-light shadow-sm">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="{% url 'bps:dashboard' %}">CorpPlanner</a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarMain" aria-controls="navbarMain" aria-expanded="false" aria-label="Toggle navigation">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarMain">
-                <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-                    {% block nav_links %}
-                    <li class="nav-item">
-                        <a class="nav-link" href="{% url 'bps:inbox' %}"><i class="bi bi-inbox"></i> Inbox</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="{% url 'bps:notifications' %}"><i class="bi bi-bell"></i> Notifications</a>
-                    </li>
-                    {% endblock %}
-                </ul>
-                <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
-                    <li class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-                            <i class="bi bi-person-circle"></i> {{ request.user.get_full_name }}
-                        </a>
-                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="userDropdown">
-                            <li><a class="dropdown-item" href="{% url 'bps:profile' %}">Profile</a></li>
-                            <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item" href="{% url 'logout' %}">Logout</a></li>
-                        </ul>
-                    </li>
-                </ul>
-            </div>
-        </div>
-    </nav>
-    <div class="container-fluid mt-3">
-        {% if breadcrumbs %}
-        <nav aria-label="breadcrumb">
-            <ol class="breadcrumb">
-                {% for crumb in breadcrumbs %}
-                <li class="breadcrumb-item {% if forloop.last %}active{% endif %}" {% if forloop.last %}aria-current="page"{% endif %}>
-                    {% if not forloop.last %}
-                    <a href="{{ crumb.url }}">{{ crumb.title }}</a>
-                    {% else %}
-                    {{ crumb.title }}
-                    {% endif %}
-                </li>
-                {% endfor %}
-            </ol>
-        </nav>
-        {% endif %}
-        {% if messages %}
-            {% for message in messages %}
-            <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
-                {{ message }}
-                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-            </div>
-            {% endfor %}
-        {% endif %}
-        {% block content %}{% endblock %}
-    </div>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-ENjdO4Dr2bkBIFxQpeo7F9LQG8Z1iQg9Ph2+Qx4U5Y0Q5h9vF3Vf5y2Q5y2qbi1" crossorigin="anonymous"></script>
-    {% block extra_js %}{% endblock %}
-</body>
-</html>
+### `models_dimension.py`
+```python
+from django.conf import settings
+from django.db import models, transaction
+class InfoObject(models.Model):
+    code        = models.CharField(max_length=20, unique=True)
+    name        = models.CharField(max_length=50)
+    description = models.TextField(blank=True)
+    order       = models.IntegerField(default=0,
+                      help_text="Controls ordering in UIs")
+    class Meta:
+        abstract = True
+        ordering = ['order', 'code']
+    def __str__(self):
+        return self.name
+class Year(InfoObject):
+    pass
+class Version(InfoObject):
+    is_public = models.BooleanField(default=True, help_text="Public versions are visible to everyone; private only to creator")
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        help_text="For private versions, track the owner"
+    )
+    class Meta(InfoObject.Meta):
+        ordering = ['order', 'code']
+class OrgUnit(MP_Node, InfoObject):
+    head_user      = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL, null=True, blank=True,
+        help_text="OrgUnit lead who must draft and approve"
+    )
+    cc_code    = models.CharField(max_length=10, blank=True)
+    node_order_by = ['order', 'code']
+class CBU(InfoObject):
+    group       = models.CharField(max_length=50, blank=True)
+    TIER_CHOICES = [('1','Tier-1'),('2','Tier-2'),('3','Tier-3')]
+    tier        = models.CharField(max_length=1, choices=TIER_CHOICES)
+    sla_profile = models.ForeignKey('SLAProfile', on_delete=models.SET_NULL, null=True, blank=True)
+    region      = models.CharField(max_length=50, blank=True)
+    is_active   = models.BooleanField(default=True)
+    node_order_by = ['group', 'code']
+    def __str__(self):
+        return f"{self.code} - {self.name}"
+class Account(InfoObject):
+    pass
+class Service(InfoObject):
+    category         = models.CharField(max_length=50)
+    subcategory      = models.CharField(max_length=50)
+    related_services = models.ManyToManyField('self', blank=True)
+    CRITICALITY_CHOICES = [('H','High'),('M','Medium'),('L','Low')]
+    criticality      = models.CharField(max_length=1, choices=CRITICALITY_CHOICES)
+    sla_response     = models.DurationField(help_text="e.g. PT2H for 2 hours")
+    sla_resolution   = models.DurationField(help_text="e.g. PT4H for 4 hours")
+    availability     = models.DecimalField(max_digits=5, decimal_places=3,
+                                           help_text="e.g. 99.900")
+    SUPPORT_HOUR_CHOICES = [
+        ('24x7','24x7'),
+        ('9x5','9x5 Mon-Fri'),
+        ('custom','Custom')
+    ]
+    support_hours    = models.CharField(max_length=10,choices=SUPPORT_HOUR_CHOICES)
+    orgunit      = models.ForeignKey('OrgUnit',on_delete=models.SET_NULL,null=True, blank=True)
+    owner            = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL,null=True, blank=True)
+    is_active        = models.BooleanField(default=True)
+    class Meta:
+        ordering = ['category','subcategory','code']
+    def __str__(self):
+        return f"{self.code} – {self.name}"
+class CostCenter(InfoObject):
+    pass
+class InternalOrder(InfoObject):
+    cc_code    = models.CharField(max_length=10, blank=True)
 ```
 
-### `templates/bps/constant_list.html`
-```html
-{% extends "bps/base.html" %}
-{% load crispy_forms_tags %}
-{% block content %}
-<h1>Constants</h1>
-<form method="post" class="mb-4">{% csrf_token %}
-  {{ form|crispy }}
-</form>
-<table class="table">
-  <thead><tr><th>Name</th><th>Value</th></tr></thead>
-  <tbody>
-    {% for c in consts %}
-      <tr><td>{{ c.name }}</td><td>{{ c.value }}</td></tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% endblock %}
-```
-
-### `templates/bps/dashboard.html`
-```html
-{% extends "bps/base.html" %}
-{% load static %}
-{% block content %}
-<div class="container py-4">
-  <h1 class="mb-4">Planning Dashboard</h1>
-  <div class="row mb-4">
-    <div class="col-md-4">
-      <div class="card">
-        <div class="card-header">Select Planning Year</div>
-        <div class="card-body p-3">
-          <form method="get">
-            <select name="year" class="form-select" onchange="this.form.submit()">
-              {% for y in all_years %}
-                <option value="{{ y }}" {% if y == selected_year %}selected{% endif %}>
-                  {{ y }}
-                </option>
-              {% endfor %}
-            </select>
-          </form>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div class="row gy-4">
-    <div class="col-md-6">
-      <div class="card h-100">
-        <div class="card-header bg-warning text-white">Incomplete Planning Tasks</div>
-        <ul class="list-group list-group-flush">
-          {% for sess in incomplete_sessions %}
-            <li class="list-group-item">
-              <a href="{% url 'bps:session_detail' sess.pk %}">
-                {{ sess.org_unit.name }} &dash; {{ sess.layout_year.layout.name }}
-              </a>
-            </li>
-          {% empty %}
-            <li class="list-group-item">None—everything is up to date!</li>
-          {% endfor %}
-        </ul>
-      </div>
-    </div>
-    <div class="col-md-6">
-      <div class="card h-100">
-        <div class="card-header bg-info text-white">Available Layouts</div>
-        <div class="card-body">
-          <div class="row row-cols-1 row-cols-md-2 g-3">
-            {% for ly in layouts %}
-              <div class="col">
-                <div class="card h-100">
-                  <div class="card-body p-2">
-                    <h5 class="card-title mb-1">{{ ly.layout.title }}</h5>
-                    <p class="card-text small mb-0">Version: {{ ly.version.code }}</p>
-                  </div>
-                  <div class="card-footer text-end">
-                    <a href="{% url 'bps:session_list' %}?layout_year={{ ly.pk }}"
-                       class="btn btn-sm btn-outline-primary">
-                       Open
-                    </a>
-                  </div>
-                </div>
-              </div>
-            {% empty %}
-              <p class="text-muted">No layouts defined for {{ selected_year }}.</p>
-            {% endfor %}
-          </div>
-        </div>
-      </div>
-    </div>
-    <div class="col-md-6">
-      <div class="card">
-        <div class="card-header bg-success text-white">Planning Functions</div>
-        <div class="card-body">
-          <div class="list-group">
-            <a href="{% url 'bps:manual_planning' %}" class="list-group-item list-group-item-action">
-              🧮 Manual Planning Grid
-            </a>
-            {% for fn in planning_funcs %}
-              <a href="{{ fn.url }}" class="list-group-item list-group-item-action">
-                {{ fn.name }}
-              </a>
-            {% endfor %}
-          </div>
-        </div>
-      </div>
-    </div>
-    <div class="col-md-6">
-      <div class="card">
-        <div class="card-header bg-secondary text-white">Admin</div>
-        <div class="card-body">
-          <div class="list-group">
-            {% for link in admin_links %}
-              <a href="{{ link.url }}" class="list-group-item list-group-item-action">
-                {{ link.name }}
-              </a>
-            {% endfor %}
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-{% endblock %}
-```
-
-### `templates/bps/data_request_detail.html`
-```html
-{% extends "bps/base.html" %}
-{% load crispy_forms_tags %}
-{% block content %}
-<div class="container my-4">
-  <h1>Data Request {{ dr.id }}</h1>
-  <form method="post" class="mb-4">{% csrf_token %}
-    {{ form|crispy }}
-    <button type="submit" class="btn btn-primary">Update</button>
-    <a href="{% url 'bps:data_request_list' %}" class="btn btn-link">Back to list</a>
-  </form>
-  <h2>Facts</h2>
-  <table class="table table-striped">
-    <thead>
-      <tr>
-        <th>Period</th>
-        <th>Qty</th>
-        <th>UoM</th>
-        <th>Amount</th>
-        <th>UoM</th>
-        <th>Other</th>
-        <th>Value</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for f in facts %}
-      <tr>
-        <td>{{ f.period }}</td>
-        <td>{{ f.quantity }}</td>
-        <td>{{ f.quantity_uom }}</td>
-        <td>{{ f.amount }}</td>
-        <td>{{ f.amount_uom }}</td>
-        <td>{{ f.other_key_figure }}</td>
-        <td>{{ f.other_value }}</td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="7">No facts recorded yet.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  <a href="{% url 'bps:fact_list' dr.pk %}" class="btn btn-success">Add/Edit Facts</a>
-</div>
-{% endblock %}
-```
-
-### `templates/bps/data_request_list.html`
-```html
-{% extends "bps/base.html" %}
-{% block content %}
-<div class="container my-4">
-  <h1>Data Requests</h1>
-  <ul class="list-group mt-3">
-    {% for dr in data_requests %}
-      <li class="list-group-item d-flex justify-content-between align-items-center">
-        <a href="{% url 'bps:data_request_detail' dr.pk %}">
-          {{ dr.id }} – {{ dr.description|default:"(no description)" }}
-        </a>
-        <span class="badge bg-secondary">
-          {{ dr.created_at|date:"Y-m-d H:i" }}
-        </span>
-      </li>
-    {% empty %}
-      <li class="list-group-item">No data requests found.</li>
-    {% endfor %}
-  </ul>
-</div>
-{% endblock %}
-```
-
-### `templates/bps/fact_list.html`
-```html
-{% extends "bps/base.html" %}
-{% load crispy_forms_tags %}
-{% block content %}
-<div class="container my-4">
-  <h1>Facts for Request {{ dr.id }}</h1>
-  <form method="post" class="row g-3 align-items-end mb-4">{% csrf_token %}
-    <div class="col-md-2">
-      {{ form.session|as_crispy_field }}
-    </div>
-    <div class="col-md-2">
-      {{ form.period|as_crispy_field }}
-    </div>
-    <div class="col-md-2">
-      {{ form.quantity|as_crispy_field }}
-    </div>
-    <div class="col-md-2">
-      {{ form.quantity_uom|as_crispy_field }}
-    </div>
-    <div class="col-md-2">
-      {{ form.amount|as_crispy_field }}
-    </div>
-    <div class="col-md-2">
-      {{ form.amount_uom|as_crispy_field }}
-    </div>
-    <div class="col-md-3">
-      {{ form.other_key_figure|as_crispy_field }}
-    </div>
-    <div class="col-md-3">
-      {{ form.other_value|as_crispy_field }}
-    </div>
-    <div class="col-md-2">
-      <button type="submit" class="btn btn-primary">Save Fact</button>
-      <a href="{% url 'bps:data_request_detail' dr.pk %}" class="btn btn-link">Done</a>
-    </div>
-  </form>
-  <table class="table table-bordered">
-    <thead>
-      <tr>
-        <th>Period</th><th>Qty</th><th>UoM</th>
-        <th>Amount</th><th>UoM</th><th>Other</th><th>Value</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for f in facts %}
-      <tr>
-        <td>{{ f.period }}</td>
-        <td>{{ f.quantity }}</td>
-        <td>{{ f.quantity_uom }}</td>
-        <td>{{ f.amount }}</td>
-        <td>{{ f.amount_uom }}</td>
-        <td>{{ f.other_key_figure }}</td>
-        <td>{{ f.other_value }}</td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="7">No facts yet.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% endblock %}
-```
-
-### `templates/bps/formula_list.html`
-```html
-{% extends "bps/base.html" %}
-{% load crispy_forms_tags %}
-{% block content %}
-<h1>Formulas</h1>
-<form method="post" class="mb-4">{% csrf_token %}
-  {{ form|crispy }}
-</form>
-<table class="table">
-  <thead><tr><th>Name</th><th>Loop Dim</th><th>Expression</th><th>Actions</th></tr></thead>
-  <tbody>
-    {% for f in formulas %}
-      <tr>
-        <td>{{ f.name }}</td>
-        <td>{{ f.loop_dimension.model }}</td>
-        <td><code>{{ f.expression }}</code></td>
-        <td>
-          <a href="{% url 'formula_run' f.pk %}?period=01" class="btn btn-sm btn-primary">
-            Run
-          </a>
-        </td>
-      </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% endblock %}
-```
-
-### `templates/bps/inbox.html`
-```html
-{% extends "bps/base.html" %}
-{% block content %}
-<div class="container my-4">
-  <h1>Inbox</h1>
-  <p class="text-muted">(Nothing to show yet.)</p>
-  {# Replace with a list of actionable items when you wire it up #}
-</div>
-{% endblock %}
-```
-
-### `templates/bps/manual_planning.html`
-```html
-{% extends "bps/base.html" %}
-{% load static %}
-{% block content %}
-<div class="container py-4">
-  <h2>Manual Planning</h2>
-  <form method="get" action="" onsubmit="goToManualPlanning(); return false;">
-    <label>Layout:
-      <select id="layout" required>
-        {% for layout in layouts %}
-        <option value="{{ layout.id }}">{{ layout.title }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>Year:
-      <select id="year" required>
-        {% for y in years %}
-        <option value="{{ y.id }}">{{ y.name }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>Version:
-      <select id="version" required>
-        {% for v in versions %}
-        <option value="{{ v.id }}">{{ v.name }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <button type="submit">Launch Planning</button>
-  </form>
-  <div class="d-flex justify-content-between mb-2">
-    <div>
-      <button class="btn btn-primary" onclick="saveChanges()">💾 Save</button>
-      <button class="btn btn-secondary" onclick="cancelChanges()">↩️ Revert</button>
-    </div>
-  </div>
-  <div id="planning-grid">
-    {% include 'bps/manual_planning_table.html' %}
-  </div>
-</div>
-<script src="https://unpkg.com/tabulator-tables@6.3.0/dist/js/tabulator.min.js"></script>
-<link rel="stylesheet" href="https://unpkg.com/tabulator-tables@6.3.0/dist/css/tabulator.min.css"/>
-<script>
-let table;
-let changedData = [];
-function goToManualPlanning() {
-  const layout = document.getElementById("layout").value;
-  const year = document.getElementById("year").value;
-  const version = document.getElementById("version").value;
-  window.location.href = `/planning/manual/${layout}/${year}/${version}/`;
-}
-function fetchData() {
-  const layoutId = "{{ selected_layout }}";
-  fetch(`/api/bps_planning_grid?layout=${layoutId}`)
-    .then(resp => resp.json())
-    .then(data => {
-      table = new Tabulator("#planning-grid", {
-        data,
-        layout: "fitColumns",
-        columns: [
-          { title: "Org", field: "org_unit.name", frozen: true },
-          { title: "Service", field: "service.name" },
-          { title: "Key Figure", field: "key_figure.code" },
-          { title: "Period", field: "period.code" },
-          { title: "Value", field: "value", editor: "input" },
-          { title: "Ref Value", field: "ref_value", editor: "input" },
-        ],
-        cellEdited: function(cell) {
-          const row = cell.getRow().getData();
-          changedData.push({
-            id: row.id,
-            field: cell.getField(),
-            value: cell.getValue()
-          });
-        }
-      });
-    });
-}
-function saveChanges() {
-  fetch("/api/bps_planning_grid_update", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ updates: changedData })
-  }).then(() => {
-    changedData = [];
-    alert("Changes saved.");
-  });
-}
-function cancelChanges() {
-  table.replaceData([]);
-  changedData = [];
-  fetchData();
-}
-document.addEventListener("DOMContentLoaded", fetchData);
-</script>
-{% endblock %}
-```
-
-### `templates/bps/manual_planning_table.html`
-```html
-{% load static %}
-<h3>Manual Planning: {{ layout.title }} | {{ year.name }} | {{ version.name }}</h3>
-<div class="d-flex justify-content-between align-items-center mb-2">
-  <div>
-    <strong>OrgUnit:</strong> {{ layout_year.org_units.all|join:", " }}
-  </div>
-  <div>
-    <button class="btn btn-sm btn-success" onclick="saveGrid()">💾 Save</button>
-    <button class="btn btn-sm btn-warning" onclick="reverseChanges()">⏪ Reverse</button>
-    <button class="btn btn-sm btn-outline-secondary" onclick="exportGrid()">📤 Export</button>
-  </div>
-</div>
-<div id="planning-grid"></div>
-<link href="https://unpkg.com/tabulator-tables@6.3.0/dist/css/tabulator.min.css" rel="stylesheet">
-<script src="https://unpkg.com/tabulator-tables@6.3.0/dist/js/tabulator.min.js"></script>
-<script>
-const layoutId = {{ layout.id }};
-const yearId = {{ year.id }};
-const versionId = {{ version.id }};
-let changedCells = [];
-const table = new Tabulator("#planning-grid", {
-  height: "600px",
-  layout: "fitDataStretch",
-  ajaxURL: `/api/bps_planning_grid?layout=${layoutId}&year=${yearId}&version=${versionId}`,
-  columns: [
-    { title: "Cost Center", field: "cost_center", frozen: true, headerFilter: true },
-    { title: "Service", field: "service", frozen: true, headerFilter: true },
-    { title: "Key Figure", field: "key_figure", frozen: true },
-    {% for p in periods %}
-    { title: "{{ p.name }}", field: "M{{ p.code }}", editor: "number", bottomCalc: "sum" },
-    {% endfor %}
-  ],
-  cellEdited: function(cell) {
-    const row = cell.getRow().getData();
-    changedCells.push({
-      id: row.id,
-      field: cell.getField(),
-      value: cell.getValue()
-    });
-  },
-});
-// Save button
-function saveGrid() {
-  if (changedCells.length === 0) {
-    alert("No changes to save.");
-    return;
-  }
-  fetch("/api/bps_planning_grid_update", {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      "X-CSRFToken": "{{ csrf_token }}"
-    },
-    body: JSON.stringify(changedCells)
-  }).then(resp => {
-    if (resp.ok) {
-      alert("Changes saved successfully!");
-      changedCells = [];
-      table.replaceData();
-    } else {
-      alert("Failed to save. See console.");
-      console.error(resp);
-    }
-  });
-}
-// Reverse button
-function reverseChanges() {
-  if (confirm("Revert all unsaved changes?")) {
-    changedCells = [];
-    table.replaceData();
-  }
-}
-// Export button
-function exportGrid() {
-  table.download("csv", "planning_data.csv");
-}
-</script>
-```
-
-### `templates/bps/notifications.html`
-```html
-{% extends "bps/base.html" %}
-{% block content %}
-<div class="container my-4">
-  <h1>Notifications</h1>
-  <p class="text-muted">You have no new notifications.</p>
-  {# Replace with real notification stream when ready #}
-</div>
-{% endblock %}
-```
-
-### `templates/bps/planning_function_list.html`
-```html
-{% extends "bps/base.html" %}
-{% load crispy_forms_tags %}
-{% block content %}
-<div class="container my-4">
-  <h1>Planning Functions</h1>
-  <form method="post" class="mb-4">{% csrf_token %}
-    {{ form|crispy }}
-  </form>
-  <table class="table table-striped">
-    <thead>
-      <tr>
-        <th>Name</th>
-        <th>Layout</th>
-        <th>Type</th>
-        <th>Parameters (JSON)</th>
-        <th>Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for fn in functions %}
-      <tr>
-        <td>{{ fn.name }}</td>
-        <td>{{ fn.layout.code }}</td>
-        <td>{{ fn.get_function_type_display }}</td>
-        <td><code>{{ fn.parameters }}</code></td>
-        <td>
-          <a href="{% url 'bps:run_function' fn.pk sess_id=fn.pk %}" class="btn btn-sm btn-primary">
-            Run
-          </a>
-        </td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="5">No planning functions defined.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% endblock %}
-```
-
-### `templates/bps/reference_data_list.html`
-```html
-{% extends "bps/base.html" %}
-{% load crispy_forms_tags %}
-{% block content %}
-<div class="container my-4">
-  <h1>Reference Data</h1>
-  <form method="post" class="mb-4">{% csrf_token %}
-    {{ form|crispy }}
-  </form>
-  <table class="table table-hover">
-    <thead>
-      <tr>
-        <th>Name</th>
-        <th>Version</th>
-        <th>Year</th>
-        <th>Description</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for ref in references %}
-      <tr>
-        <td>{{ ref.name }}</td>
-        <td>{{ ref.source_version.code }}</td>
-        <td>{{ ref.source_year.code }}</td>
-        <td>{{ ref.description|default:"–" }}</td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="4">No reference data found.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% endblock %}
-```
-
-### `templates/bps/session_detail.html`
-```html
-{# templates/bps/session_detail.html #}
-{% extends "bps/base.html" %}
-{% load crispy_forms_tags %}
-{% block extra_head %}
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable@11/dist/handsontable.min.css">
-  <script src="https://cdn.jsdelivr.net/npm/handsontable@11/dist/handsontable.min.js"></script>
-{% endblock %}
-{% block content %}
-  <h1>Planning: {{ sess.org_unit }} / {{ sess.layout_year }}</h1>
-  {% if can_edit %}
-    <form method="post" class="mb-3">{% csrf_token %}
-      {{ form|crispy }}
-    </form>
-  {% endif %}
-  <h2>Period Definition</h2>
-  <form method="post" class="mb-3">{% csrf_token %}
-    {{ period_form|crispy }}
-  </form>
-  <div id="period-table">
-    <vue-period-table :buckets="{{ periods|safe }}" />
-  </div>
-  <h2>Current Facts ({{ dr.description }})</h2>
-  <div id="hot-table"></div>
-  {% if sess.status == sess.Status.DRAFT and request.user == sess.org_unit.head_user %}
-    <form method="post">
-      {% csrf_token %}
-      <button name="complete" class="btn btn-success">Mark Completed</button>
-    </form>
-  {% endif %}
-  {% if sess.status == sess.Status.COMPLETED and request.user.is_staff %}
-    <form method="post">
-      {% csrf_token %}
-      <button name="freeze" class="btn btn-danger">Freeze Session</button>
-    </form>
-  {% endif %}
-{% endblock %}
-{% block extra_js %}
-  <script>
-    document.addEventListener('DOMContentLoaded', function() {
-      const container = document.getElementById('hot-table');
-      new Handsontable(container, {
-        data: {{ hot_data }},
-        colHeaders: ['Period','Key Figure','Value'],
-        rowHeaders: true,
-        licenseKey: 'non-commercial-and-evaluation',
-        columns: [
-          { data: 0, type: 'text',   readOnly: true },
-          { data: 1, type: 'text',   readOnly: true },
-          { data: 2, type: 'numeric', format: '0.00' }
-        ],
-        stretchH: 'all',
-        manualColumnResize: true,
-        manualRowResize: true
-      });
-    });
-  </script>
-  <script src="https://unpkg.com/vue@3"></script>
-  <script>
-    const app = Vue.createApp({});
-    app.component('vue-period-table', {
-      props: ['buckets'],
-      template: `
-        <table class="table table-bordered">
-          <thead><tr><th v-for="b in buckets">{{ b.name }}</th></tr></thead>
-        </table>`
-    });
-    app.mount('#period-table');
-  </script>
-{% endblock %}
-```
-
-### `templates/bps/session_list.html`
-```html
-{% extends "bps/base.html" %}
-{% load static %}
-{% block content %}
-<div class="container my-4">
-  <h1>All Planning Sessions</h1>
-  <table class="table table-hover">
-    <thead>
-      <tr>
-        <th>Org Unit</th>
-        <th>Layout / Year • Version</th>
-        <th>Status</th>
-        <th>Created At</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for sess in sessions %}
-      <tr>
-        <td>
-          <a href="{% url 'bps:session_detail' sess.pk %}">
-            {{ sess.org_unit.name }}
-          </a>
-        </td>
-        <td>{{ sess.layout_year.layout.name }} / {{ sess.layout_year.year.code }} • {{ sess.layout_year.version.code }}</td>
-        <td>{{ sess.get_status_display }}</td>
-        <td>{{ sess.created_at|date:"Y-m-d H:i" }}</td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="4">No sessions found.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-{% endblock %}
-```
-
-### `templates/bps/subformula_list.html`
-```html
-{% extends "bps/base.html" %}
-{% load crispy_forms_tags %}
-{% block content %}
-<h1>Sub-Formulas</h1>
-<form method="post" class="mb-4">{% csrf_token %}
-  {{ form|crispy }}
-</form>
-<table class="table">
-  <thead><tr><th>Name</th><th>Expression</th></tr></thead>
-  <tbody>
-    {% for s in subs %}
-      <tr><td>{{ s.name }}</td><td><code>{{ s.expression }}</code></td></tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% endblock %}
-```
-
-### `templates/bps/variable_list.html`
-```html
-{% extends "bps/base.html" %}
-{% load crispy_forms_tags %}
-{% block content %}
-<div class="container my-4">
-  <h1>Global Variables</h1>
-  <form method="post" class="row g-3 align-items-end mb-4">{% csrf_token %}
-    <div class="col-md-4">
-      {{ form.name|as_crispy_field }}
-    </div>
-    <div class="col-md-4">
-      {{ form.value|as_crispy_field }}
-    </div>
-    <div class="col-md-8">
-      {{ form.description|as_crispy_field }}
-    </div>
-    <div class="col-md-2">
-      <button type="submit" class="btn btn-primary">Add Variable</button>
-    </div>
-  </form>
-  <table class="table table-hover">
-    <thead>
-      <tr><th>Name</th><th>Value</th><th>Description</th></tr>
-    </thead>
-    <tbody>
-      {% for v in consts %}
-      <tr>
-        <td>{{ v.name }}</td>
-        <td>{{ v.value }}</td>
-        <td>{{ v.description }}</td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="3">No variables defined.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% endblock %}
+### `models_resource.py`
+```python
+from django.db import models, transaction
+from .models_dimension import *
+class Skill(models.Model):
+    name = models.CharField(max_length=50, unique=True)
+    description = models.TextField(blank=True, null=True)
+    def __str__(self): return self.name
+class RateCard(models.Model):
+    RESOURCE_CHOICES = [('EMP', 'Employee'), ('CON','Contractor'), ('MSP','MSP')]
+    skill = models.ForeignKey(Skill, on_delete=models.PROTECT)
+    level             = models.CharField(max_length=20)
+    resource_type       = models.CharField(max_length=20, choices=RESOURCE_CHOICES)
+    country           = models.CharField(max_length=50)
+    efficiency_factor = models.DecimalField(default=1.00, max_digits=5, decimal_places=2,
+                                            help_text="0.00-1.00")
+    class Meta:
+        unique_together = ('skill', 'level', 'resource_type', 'country')
+        ordering = ['skill','level','resource_category','country']
+        verbose_name = "Rate Card Template"
+        verbose_name_plural = "Rate Card Templates"
+    def __str__(self):
+        return (f"{self.resource_category} | {self.skill} ({self.level}) @ "
+                f"{self.country}")
+class Position(InfoObject):
+    code        = models.CharField(max_length=20)
+    year        = models.ForeignKey(Year, on_delete=models.CASCADE)
+    skill       = models.ForeignKey(Skill, on_delete=models.PROTECT)
+    level       = models.CharField(max_length=20)
+    orgunit     = models.ForeignKey(OrgUnit, on_delete=models.PROTECT, null=True, blank=True)
+    fte         = models.FloatField(default=1.0)
+    is_open     = models.BooleanField(default=False)
+    intended_resource_category = models.CharField(
+        max_length=20,
+        choices=RateCard.RESOURCE_CHOICES,
+        default='EMP',
+        help_text="Intended category for this position (Employee, Contractor, MSP). Used for budgeting if 'is_open' is True."
+    )
+    filled_by_resource = models.ForeignKey(Resource, on_delete=models.SET_NULL, null=True, blank=True,
+                                            help_text="The specific person filling this position.")
+    class Meta(InfoObject.Meta):
+        unique_together = ('year', 'code')
+        ordering = ['year__code', 'order', 'code']
+    def __str__(self):
+        status = 'Open' if self.is_open else 'Filled'
+        return f"[{self.year.code}] {self.code} ({self.skill}/{self.level}) - {status}"
+class Resource(models.Model):
+    unique_id = models.CharField(max_length=100, unique=True, help_text="Internal tracking ID for this resource.")
+    display_name = models.CharField(max_length=255)
+    resource_category = models.CharField(
+        max_length=20,
+        choices=RateCard.RESOURCE_CATEGORY_CHOICES,
+        help_text="Type of resource (Employee, Contractor, MSP Staff, etc.)"
+    )
+    employee = models.OneToOneField(Employee, on_delete=models.SET_NULL, null=True, blank=True)
+    contractor = models.OneToOneField(Contractor, on_delete=models.SET_NULL, null=True, blank=True)
+    current_skill = models.ForeignKey(Skill, on_delete=models.SET_NULL, null=True, blank=True)
+    current_level = models.CharField(max_length=20, blank=True, null=True)
+    def __str__(self):
+        return self.display_name
+    def get_current_hourly_rate(self, year):
+        try:
+            rate_card = RateCard.objects.get(
+            skill=self.current_skill,
+            level=self.current_level,
+            resource_type=self.resource_category,
+            country=self.country,
+         )
+            return rate_card.hourly_rate
+        except RateCard.DoesNotExist:
+            return None
 ```
 
 ### `urls.py`
 ```python
-from django.urls import path
+from django.urls import path, include
 from django.contrib.contenttypes.models import ContentType
 from dal import autocomplete
 from . import views
-from .autocomplete import *
-from .models import (
-    Year, Period, OrgUnit, CBU, Account, InternalOrder, CostCenter,
-    UnitOfMeasure, PlanningLayoutYear
+from .autocomplete import (
+    LayoutAutocomplete, ContentTypeAutocomplete,
+    YearAutocomplete, PeriodAutocomplete,
+    OrgUnitAutocomplete, CBUAutocomplete,
+    AccountAutocomplete, InternalOrderAutocomplete,
+    UnitOfMeasureAutocomplete, LayoutYearAutocomplete,
 )
-from bps.views.manual_planning import ManualPlanningView
+from .models import Year, Period, OrgUnit, CBU, Account, InternalOrder, CostCenter, UnitOfMeasure, PlanningLayoutYear
 app_name = "bps"
 urlpatterns = [
-    path('', views.dashboard, name='dashboard'),
-    path('profile/', views.profile, name='profile'),
-    path('inbox/', views.inbox, name='inbox'),
-    path('notifications/', views.notifications, name='notifications'),
+    path("",            views.dashboard,    name="dashboard"),
+    path("profile/",    views.profile,      name="profile"),
+    path("inbox/",      views.inbox,        name="inbox"),
+    path("notifications/", views.notifications, name="notifications"),
     path(
-      "api/bps_planning_grid",
-      PlanningGridView.as_view(),
-      name="bps_planning_grid"
+        "planning/manual/select/",
+        views.ManualPlanningSelectView.as_view(),
+        name="manual_planning_select",
     ),
     path(
-      "api/bps_planning_grid_update",
-      PlanningGridBulkUpdateView.as_view(),
-      name="bps_planning_grid_update"
+        "planning/manual/<int:layout_id>/<int:year_id>/<int:version_id>/",
+        views.ManualPlanningView.as_view(),
+        name="manual_planning",
     ),
-    path("manual-planning/", ManualPlanningView.as_view(), name="manual_planning"),
-    path('planning/manual/', views.ManualPlanningSelectView.as_view(), name='manual-planning-select'),
-    path('planning/manual/<int:layout_id>/<int:year_id>/<int:version_id>/', views.ManualPlanningView.as_view(), name='manual-planning'),
-    path('constants/', views.constant_list, name='constant_list'),
-    path('subformulas/', views.subformula_list, name='subformula_list'),
-    path('formulas/', views.formula_list, name='formula_list'),
-    path('formulas/run/<int:pk>/', views.formula_run, name='formula_run'),
-    path('copy-actual/', views.copy_actual, name='copy_actual'),
-    path('distribute-key/', views.distribute_key, name='distribute_key'),
-    path('functions/run/<int:pk>/', views.run_planning_function, name='run_function'),
-    path('functions/',            views.planning_function_list,  name='planning_function_list'),
-    path('functions/run/<int:pk>/<int:session_id>/', views.run_planning_function, name='run_function'),
-    path('reference-data/',       views.reference_data_list,     name='reference_data_list'),
-    path('data-requests/', views.data_request_list, name='data_request_list'),
-    path('data-requests/<uuid:pk>/', views.data_request_detail, name='data_request_detail'),
-    path('requests/<uuid:request_id>/facts/', views.fact_list, name='fact_list'),
-    path('variables/', views.variable_list, name='variable_list'),
-    path('sessions/', views.session_list, name='session_list'),
-    path('sessions/<int:pk>/', views.session_detail, name='session_detail'),
-    path('autocomplete/layout/',    LayoutAutocomplete.as_view(), name='layout-autocomplete'),
-    path('autocomplete/contenttype/', ContentTypeAutocomplete.as_view(), name='contenttype-autocomplete'),
-    path('autocomplete/year/',         YearAutocomplete.as_view(),         name='year-autocomplete'),
-    path('autocomplete/period/',       PeriodAutocomplete.as_view(),       name='period-autocomplete'),
-    path('autocomplete/orgunit/',      OrgUnitAutocomplete.as_view(),      name='orgunit-autocomplete'),
-    path('autocomplete/cbu/',          CBUAutocomplete.as_view(),          name='cbu-autocomplete'),
-    path('autocomplete/account/',      AccountAutocomplete.as_view(),      name='account-autocomplete'),
-    path('autocomplete/internalorder/',InternalOrderAutocomplete.as_view(),name='internalorder-autocomplete'),
-     path('autocomplete/uom/',          UnitOfMeasureAutocomplete.as_view(), name='uom-autocomplete'),
-    path('autocomplete/layoutyear/',   LayoutYearAutocomplete.as_view(),   name='layoutyear-autocomplete'),
+    path("constants/",    views.constant_list,      name="constant_list"),
+    path("subformulas/",  views.subformula_list,    name="subformula_list"),
+    path("formulas/",     views.formula_list,       name="formula_list"),
+    path("formulas/run/<int:pk>/", views.formula_run, name="formula_run"),
+    path("copy-actual/",    views.copy_actual,   name="copy_actual"),
+    path("distribute-key/", views.distribute_key, name="distribute_key"),
+    path("functions/",            views.planning_function_list,  name="planning_function_list"),
+    path("functions/run/<int:pk>/<int:session_id>/", views.run_planning_function, name="run_function"),
+    path("reference-data/", views.reference_data_list, name="reference_data_list"),
+    path("data-requests/",               views.data_request_list,    name="data_request_list"),
+    path("data-requests/<uuid:pk>/",     views.data_request_detail,  name="data_request_detail"),
+    path("requests/<uuid:request_id>/facts/", views.fact_list,        name="fact_list"),
+    path("variables/", views.variable_list, name="variable_list"),
+    path("sessions/",       views.session_list,   name="session_list"),
+    path("sessions/<int:session_id>/advance/",views.advance_stage, name="advance_stage",),
+    path("sessions/<int:pk>/", views.session_detail, name="session_detail"),
+    path("autocomplete/layout/",        LayoutAutocomplete.as_view(), name="layout-autocomplete"),
+    path("autocomplete/contenttype/",   ContentTypeAutocomplete.as_view(), name="contenttype-autocomplete"),
+    path("autocomplete/year/",          YearAutocomplete.as_view(),    name="year-autocomplete"),
+    path("autocomplete/period/",        PeriodAutocomplete.as_view(),  name="period-autocomplete"),
+    path("autocomplete/orgunit/",       OrgUnitAutocomplete.as_view(), name="orgunit-autocomplete"),
+    path("autocomplete/cbu/",           CBUAutocomplete.as_view(),     name="cbu-autocomplete"),
+    path("autocomplete/account/",       AccountAutocomplete.as_view(), name="account-autocomplete"),
+    path("autocomplete/internalorder/", InternalOrderAutocomplete.as_view(), name="internalorder-autocomplete"),
+    path("autocomplete/uom/",           UnitOfMeasureAutocomplete.as_view(), name="uom-autocomplete"),
+    path("autocomplete/layoutyear/",    LayoutYearAutocomplete.as_view(),   name="layoutyear-autocomplete"),
+    path("api/", include("bps.api.urls")),
 ]
 ```
 
@@ -1968,6 +1435,7 @@ urlpatterns = [
 from uuid import UUID
 from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib import messages
+from .models import PlanningSession, PlanningStage
 from django.urls import reverse
 from django.utils import timezone
 from django.views.generic import TemplateView
@@ -1988,6 +1456,21 @@ from .formula_executor import FormulaExecutor
 from django.forms import modelform_factory
 from django.shortcuts import render
 from django.urls import reverse
+def advance_stage(request, session_id):
+    sess = get_object_or_404(PlanningSession, pk=session_id)
+    next_stage = (
+        PlanningStage.objects
+        .filter(order__gt=sess.current_stage.order)
+        .order_by("order")
+        .first()
+    )
+    if not next_stage:
+        messages.warning(request, "Already at final stage.")
+    else:
+        sess.current_step = next_stage
+        sess.save(update_fields=["current_stage"])
+        messages.success(request, f"Moved to stage: {next_stage.name}")
+    return redirect("bps:session_detail", pk=session_id)
 def inbox(request):
     breadcrumbs = [
         {'url': reverse('bps:dashboard'), 'title': 'Dashboard'},
@@ -2061,9 +1544,7 @@ class ManualPlanningSelectView(TemplateView):
     template_name = "bps/manual_planning_select.html"
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        ctx["layouts"] = PlanningLayout.objects.filter(is_active=True)
-        ctx["years"] = Year.objects.all()
-        ctx["versions"] = Version.objects.all()
+        ctx["layouts"]  = PlanningLayoutYear.objects.select_related("layout","year","version")
         return ctx
 class ManualPlanningView(TemplateView):
     template_name = "bps/manual_planning.html"
@@ -2266,5 +1747,24 @@ def copy_actual(request):
 def distribute_key(request):
     messages.info(request, "Distribute by Key is not yet implemented.")
     return redirect('bps:dashboard')
+```
+
+### `views_decorator.py`
+```python
+from rest_framework.response import Response
+from .models import PlanningSession
+def require_stage(stage_code):
+    def decorator(fn):
+        def wrapped(self, request, *args, **kw):
+            sess = PlanningSession.objects.get(pk=kw.get('session_id'))
+            if sess.current_stage.code != stage_code \
+               and not sess.current_stage.can_run_in_parallel:
+                return Response(
+                    {"detail": f"Must be in {stage_code} step to call this."},
+                    status=403
+                )
+            return fn(self, request, *args, **kw)
+        return wrapped
+    return decorator
 ```
 

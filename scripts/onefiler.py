@@ -147,6 +147,69 @@ def summarize_functions_only(code: str) -> str:
 
     return '\n'.join(summarized)
 
+def summarize_django_models(code: str) -> str:
+    model_blocks = []
+    lines = code.splitlines()
+    inside_model = False
+    class_name = ''
+    block = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        if stripped.startswith('class ') and '(models.Model)' in stripped:
+            if block:
+                model_blocks.append((class_name, block))
+            class_name = stripped.split()[1].split('(')[0]
+            block = [line]
+            inside_model = True
+            continue
+
+        if inside_model:
+            if stripped.startswith('class ') or stripped.startswith('def '):
+                model_blocks.append((class_name, block))
+                inside_model = False
+                block = []
+                continue
+            block.append(line)
+
+    if inside_model and block:
+        model_blocks.append((class_name, block))
+
+    field_map = {
+        'CharField': 'Char',
+        'TextField': 'Text',
+        'IntegerField': 'Int',
+        'BooleanField': 'Bool',
+        'DateField': 'Date',
+        'DateTimeField': 'DateTime',
+        'ForeignKey': 'FK',
+        'OneToOneField': 'One',
+        'ManyToManyField': 'Many',
+        'DecimalField': 'Dec',
+        'FloatField': 'Float',
+        'JSONField': 'JSON',
+        'FileField': 'File',
+        'ImageField': 'Image',
+    }
+
+    summary = []
+
+    for name, block in model_blocks:
+        summary.append(f"class {name}(models.Model):")
+        for line in block[1:]:
+            m = re.match(r'\s*(\w+)\s*=\s*models\.(\w+)\((.*?)\)', line)
+            if m:
+                field_name, field_type, field_args = m.groups()
+                short = field_map.get(field_type, field_type)
+                if short == 'FK':
+                    fk_target = field_args.split(',')[0].strip()
+                    summary.append(f"    {field_name:<10} = FK({fk_target})")
+                else:
+                    summary.append(f"    {field_name:<10} = {short}")
+        summary.append("")
+    return '\n'.join(summary)
+
 def clean_code(code: str, summary_level: str = 'high', keep_comments: bool = False) -> str:
     if summary_level == 'none' and keep_comments:
         return code
@@ -154,6 +217,7 @@ def clean_code(code: str, summary_level: str = 'high', keep_comments: bool = Fal
     code = compact_python_code(code)
     if summary_level == 'high':
         code = summarize_functions_only(code)
+        return summarize_django_models(code)
     return code
 
 def clean_html(content: str) -> str:
@@ -243,7 +307,7 @@ def main():
     parser.add_argument('-o', '--output_file', help='Output Markdown file name (in "docs" folder)')
     parser.add_argument('--include_structure', action='store_true', help='Include folder structure')
     parser.add_argument('--include_templates', action='store_true', help='Include .html and .js files')
-    parser.add_argument('--summary', choices=['high', 'mid', 'none'], default='none', help='Python code summary level')
+    parser.add_argument('--summary', choices=['high', 'mid', 'none', 'model'], default='none', help='Python code summary level')
     parser.add_argument('--keep_comments', action='store_true', help='Keep Python comments if summary=none')
     parser.add_argument('--admin', action='store_true', dest='include_admin', help='Include Django admin files')
     parser.add_argument('--utils', action='store_true', dest='include_utils', help='Include utility modules')

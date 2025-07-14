@@ -1,7 +1,9 @@
 # bps/models.py
 
 from uuid import uuid4
-from django.db import models
+from django.db import models, transaction
+from django.contrib.postgres.fields import JSONField
+from django.shortcuts import get_object_or_404
 from django.db.models import Sum
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
@@ -38,172 +40,11 @@ class ConversionRate(models.Model):
         return f"1 {self.from_uom} → {self.factor} {self.to_uom}"
     
 # ── 1. InfoObject Base & Dimension Models ─────────────────────────────────
-
-class InfoObject(models.Model):
-    """
-    Abstract base for any dimension (Year, Period, Version, OrgUnit, etc.).
-    """
-    code        = models.CharField(max_length=20, unique=True)
-    name        = models.CharField(max_length=50)
-    description = models.TextField(blank=True)
-    order       = models.IntegerField(default=0,
-                      help_text="Controls ordering in UIs")
-
-    class Meta:
-        abstract = True
-        ordering = ['order', 'code']
-
-    def __str__(self):
-        return self.name
-
-class Year(InfoObject):
-    """e.g. code='2025', name='Fiscal Year 2025'"""
-    pass
-
-class Version(InfoObject):
-    """
-    A global dimension (e.g. 'Draft', 'Final', 'Plan v1', 'Plan v2').
-    Used to isolate concurrent planning streams.
-    """
-    pass
-
-class OrgUnit(MP_Node, InfoObject):
-    head_user      = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL, null=True, blank=True,
-        help_text="OrgUnit lead who must draft and approve"
-    )
-    # parent         = models.ForeignKey(
-    #     'self',
-    #     on_delete=models.SET_NULL, null=True, blank=True,
-    #     related_name='children'
-    # )
-    cc_code    = models.CharField(max_length=10, blank=True)    # SAP cost center code
-    node_order_by = ['order', 'code']  # controls sibling ordering
-
-
-class CBU(InfoObject):
-    """Client Business Unit (inherits InfoObject)"""
-    group       = models.CharField(max_length=50, blank=True)  # e.g. industry vertical
-    TIER_CHOICES = [('1','Tier-1'),('2','Tier-2'),('3','Tier-3')]
-    tier        = models.CharField(max_length=1, choices=TIER_CHOICES)
-    sla_profile = models.ForeignKey('SLAProfile', on_delete=models.SET_NULL, null=True, blank=True)
-    region      = models.CharField(max_length=50, blank=True)
-    is_active   = models.BooleanField(default=True)
-
-    node_order_by = ['group', 'code']
-
-    def __str__(self):
-        return f"{self.code} - {self.name}"
-
-
-class Account(InfoObject):
-    pass
-
-class Service(InfoObject):
-    """Product/Service"""
-    category         = models.CharField(max_length=50)    # e.g. Platform, Security
-    subcategory      = models.CharField(max_length=50)    # e.g. Directory Services
-    related_services = models.ManyToManyField('self', blank=True)
-    CRITICALITY_CHOICES = [('H','High'),('M','Medium'),('L','Low')]
-    criticality      = models.CharField(max_length=1, choices=CRITICALITY_CHOICES)
-    sla_response     = models.DurationField(help_text="e.g. PT2H for 2 hours")
-    sla_resolution   = models.DurationField(help_text="e.g. PT4H for 4 hours")
-    availability     = models.DecimalField(max_digits=5, decimal_places=3,
-                                           help_text="e.g. 99.900")
-    SUPPORT_HOUR_CHOICES = [
-        ('24x7','24x7'),
-        ('9x5','9x5 Mon-Fri'),
-        ('custom','Custom')
-    ]
-    support_hours    = models.CharField(max_length=10,choices=SUPPORT_HOUR_CHOICES)
-    orgunit      = models.ForeignKey('OrgUnit',on_delete=models.SET_NULL,null=True, blank=True)
-    owner            = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL,null=True, blank=True)
-    is_active        = models.BooleanField(default=True)
-
-    class Meta:
-        ordering = ['category','subcategory','code']
-
-    def __str__(self):
-        return f"{self.code} – {self.name}"
-    
-class CostCenter(InfoObject):
-    pass
-
-class InternalOrder(InfoObject):
-    cc_code    = models.CharField(max_length=10, blank=True)    # SAP cost center code
+from .models_dimension import *
 
 
 # RESOURCE
-class Skill(models.Model):
-    name = models.CharField(max_length=50, unique=True)
-    description = models.TextField(blank=True, null=True)
-    def __str__(self): return self.name
-
-class RateCard(models.Model):
-    """
-    Contractor/MSP rate and efficiency planning, scoped by Year.
-    """
-    RESOURCE_CHOICES = [('EMP', 'Employee'), ('CON','Contractor'), ('MSP','MSP')]
-
-    skill = models.ForeignKey(Skill, on_delete=models.PROTECT) # Use PROTECT to prevent deleting skills in use
-    level             = models.CharField(max_length=20)      # e.g. Junior/Mid/Senior
-    resource_type       = models.CharField(max_length=20, choices=RESOURCE_CHOICES)
-    country           = models.CharField(max_length=50)
-    efficiency_factor = models.DecimalField(default=1.00, max_digits=5, decimal_places=2,
-                                            help_text="0.00-1.00")
-    class Meta:
-        unique_together = ('skill','level','resource_category','country') # No 'year' here
-        ordering = ['skill','level','resource_category','country']
-        verbose_name = "Rate Card Template"
-        verbose_name_plural = "Rate Card Templates"
-
-    def __str__(self):
-        return (f"{self.resource_category} | {self.skill} ({self.level}) @ "
-                f"{self.country}")
-    
-    # You'll need logic (perhaps in a signal or a custom save method)
-    # to calculate `hourly_rate` from its components for 'EMP' types.
-    """
-    def save(self, *args, **kwargs):
-        if self.resource_category == 'EMP':
-            self.hourly_rate = (self.base_salary_hourly_equiv or 0) + \
-                               (self.benefits_hourly_equiv or 0) + \
-                               (self.payroll_tax_hourly_equiv or 0) + \
-                               (self.overhead_allocation_hourly or 0)
-        super().save(*args, **kwargs)
-    """
-
-
-class Position(InfoObject):
-    # Override parent code to remove unique constraint
-    code        = models.CharField(max_length=20)
-    year        = models.ForeignKey(Year, on_delete=models.CASCADE)
-    skill       = models.ForeignKey(Skill, on_delete=models.PROTECT)
-    level       = models.CharField(max_length=20)      # e.g. Junior/Mid/Senior
-    orgunit     = models.ForeignKey(OrgUnit, on_delete=models.PROTECT, null=True, blank=True) 
-    fte         = models.FloatField(default=1.0)        # FTE equivalent
-    is_open     = models.BooleanField(default=False)    # open vs. filled
-    intended_resource_category = models.CharField(
-        max_length=20,
-        choices=RateCard.RESOURCE_CATEGORY_CHOICES,
-        default='EMP', # Assume internal unless specified
-        help_text="Intended category for this position (Employee, Contractor, MSP). Used for budgeting if 'is_open' is True."
-    )
-    filled_by_resource = models.ForeignKey(Resource, on_delete=models.SET_NULL, null=True, blank=True,
-                                            help_text="The specific person filling this position.")    
-    class Meta(InfoObject.Meta):
-        unique_together = ('year', 'code')
-        ordering = ['year__code', 'order', 'code']
-
-    def __str__(self):
-        status = 'Open' if self.is_open else 'Filled'
-        return f"[{self.year.code}] {self.code} ({self.skill}/{self.level}) - {status}"
-# New KeyFigures for Position budgeting:
-# budgeted_fte = KeyFigure.objects.create(code='BUDGETED_FTE', name='Budgeted Full-Time Equivalent')
-# position_status = KeyFigure.objects.create(code='POSITION_STATUS', name='Position Status (Open/Filled)')
-# intended_category = KeyFigure.objects.create(code='INTENDED_CATEGORY', name='Intended Resource Category')
-
+from .models_resource import *
 
 
 class UserMaster(models.Model):
@@ -258,6 +99,7 @@ class PlanningLayout(models.Model):
 
 class PlanningDimension(models.Model):
     """ Specifies what dimensions are visible, editable, filtered.
+    API, expose the distinct values for that dimension (e.g. GET /api/planning-grid/headers/?dim=Region&layout=123) and accept a query‐param like &Region=EMEA to filter.
     """
     layout = models.ForeignKey(PlanningLayout, related_name="dimensions", on_delete=models.CASCADE)
     name = models.CharField(max_length=100)  # e.g. "SkillGroup", "System", "ServiceType"
@@ -268,6 +110,10 @@ class PlanningDimension(models.Model):
     is_editable = models.BooleanField(default=False)
     required = models.BooleanField(default=True)
     data_source = models.CharField(max_length=100)  # optional: e.g. 'SkillGroup.objects.all()'
+    is_navigable = models.BooleanField(default=False,
+        help_text="If true, UI should render Prev/Next controls for this dimension"
+    )
+    display_order = models.PositiveSmallIntegerField(default=0)
 
 class PlanningKeyFigure(models.Model):
     """ Key figures used in the layout: amount, quantity, derived ones.
@@ -350,6 +196,32 @@ class PeriodGrouping(models.Model):
 
 # ── 4. Workflow: PlanningSession ────────────────────────────────────────────
 
+class PlanningStage(models.Model):
+    """
+    A single step in the planning process.
+        order   code    name    can_run_in_parallel
+        1   ENV_SETUP   Environment Setup   True
+        2   GLOBAL_VALUES   Global Planning Values  True
+        3   MANUAL_ORG  Manual Planning (per OrgUnit)   False
+        4   VALIDATE_MANUAL Validate Manual Planning    False
+        5   RUN_FUNCTIONS   Run Enterprise‐wide Functions   True
+        6   REVIEW_FINAL    Review & Finalize   False
+    """
+    code       = models.CharField(max_length=20, unique=True)
+    name       = models.CharField(max_length=100)
+    order      = models.PositiveSmallIntegerField(
+                   help_text="Determines execution order. Lower=earlier.")
+    can_run_in_parallel = models.BooleanField(
+                   default=False,
+                   help_text="If True, this step may execute alongside others.")
+    # e.g. 'delta', 'overwrite', etc. but DataRequest will get its own type.
+
+    class Meta:
+        ordering = ['order']
+
+    def __str__(self):
+        return f"{self.order}: {self.name}"
+
 class PlanningSession(models.Model):
     """
     One OrgUnit’s planning for one layout‐year.
@@ -377,6 +249,14 @@ class PlanningSession(models.Model):
                                     related_name='+')
     frozen_at   = models.DateTimeField(null=True, blank=True)
 
+    """ 
+    - When you create a new session, set current_stage = PlanningStage.objects.get(order=1).
+    - In every view (manual planning, data-request creation, function runs, etc.) check
+    if not session.current_stage.can_run_in_parallel and session.current_stage.order != MY_STEP_ORDER:
+        raise PermissionDenied("Cannot do manual planning until stage 3 is reached.")
+    """
+    current_stage = models.ForeignKey(PlanningStage, on_delete=models.PROTECT, null=True, blank=True)
+
     class Meta:
         unique_together = ('layout_year','org_unit')
     def __str__(self):
@@ -403,21 +283,31 @@ class PlanningSession(models.Model):
 # ── 5. Fact & EAV (as before) ───────────────────────────────────────────────
 
 class DataRequest(models.Model):
+    ACTION_CHOICES = [
+        ('DELTA',     'Delta'),
+        ('OVERWRITE', 'Overwrite'),
+        ('RESET',     'Reset to zero'),
+    ]    
     id          = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     session     = models.ForeignKey(PlanningSession, on_delete=models.CASCADE,
                                     related_name='requests')
     description = models.CharField(max_length=200, blank=True)
+    action_type = models.CharField(max_length=20,choices=ACTION_CHOICES,default='DELTA',
+        help_text="Delta: add on top of existing; Overwrite: replace; Reset: zero-out then write",
+    )    
     created_by  = models.ForeignKey(settings.AUTH_USER_MODEL,
                                     on_delete=models.SET_NULL, null=True, blank=True)
     created_at  = models.DateTimeField(auto_now_add=True)
+
     def __str__(self): return f"{self.session} – {self.description or self.id}"
+
 
 class PlanningFact(models.Model):
     """
     Core Models (EAV-style with fixed dimension FK)
     One “row” of plan data for a given DataRequest + Period.
     """
-    request     = models.ForeignKey(DataRequest, on_delete=models.PROTECT)
+    # request     = models.ForeignKey(DataRequest, on_delete=models.PROTECT)    # move to ReqeustLogs
     session     = models.ForeignKey(PlanningSession, on_delete=models.CASCADE)
     version     = models.ForeignKey(Version, on_delete=models.PROTECT)
 
@@ -430,7 +320,9 @@ class PlanningFact(models.Model):
     account   = models.ForeignKey(Account, null=True, blank=True, on_delete=models.PROTECT)
 
     # Optional domain-specific dimensions
-    driver_refs = models.JSONField(default=dict, help_text="e.g. {'Position':123, 'SkillGroup':'Developer'}")
+    dimension_values = models.JSONField(default=dict, 
+        help_text="Mapping of extra dimension name → selected dimension key: e.g. {'Position':123, 'SkillGroup':'Developer'}"
+    )
 
     # Key figure
     # key_figure  = models.CharField(max_length=100)  
@@ -441,7 +333,7 @@ class PlanningFact(models.Model):
     ref_uom     = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name='+', null=True)
 
     class Meta:
-        unique_together = ('request', 'version', 'year', 'period', 'org_unit', 'service', 'account', 'key_figure', 'driver_refs')
+        unique_together = ('request', 'version', 'year', 'period', 'org_unit', 'service', 'account', 'key_figure', 'dimension_values')
         indexes = [
             models.Index(fields=['year', 'version', 'org_unit']),
             models.Index(fields=['key_figure']),
@@ -463,12 +355,73 @@ class PlanningFact(models.Model):
             to_uom=to_uom
         ).factor
         return round(self.value * rate, 2)
+
+class PlanningLayoutDimension(models.Model):
+    """
+    Example in views
+        layout_dims = layout_year.layout_dimensions.filter(is_row=True).order_by('order')
+        ctx["lead_dimensions"] = [
+            {
+            "model": ld.content_type.model,
+            "label": ld.content_type.model_class()._meta.verbose_name,
+            "order": ld.order,
+            "allowed": ld.allowed_values,
+            "filters": ld.filter_criteria,
+            }
+            for ld in layout_dims
+        ]    
+    """
+    layout_year    = models.ForeignKey(PlanningLayoutYear,
+                                       on_delete=models.CASCADE,
+                                       related_name="layout_dimensions")
+    content_type   = models.ForeignKey(ContentType,
+                                       on_delete=models.CASCADE)
+    is_row         = models.BooleanField(default=False)
+    is_column      = models.BooleanField(default=False)
+
+    order          = models.PositiveSmallIntegerField(default=0,
+                        help_text="Defines the sequence in the grid")
+
+    # Optional: constrain available values
+    allowed_values = models.JSONField(blank=True, default=list,
+                        help_text="List of allowed PKs or codes")
+    filter_criteria= models.JSONField(blank=True, default=dict,
+                        help_text="Extra filters to apply when building headers")
     
+
+class PlanningFactDimension(models.Model):
+    fact       = models.ForeignKey(PlanningFact, on_delete=models.CASCADE, related_name="fact_dimensions")
+    dimension  = models.ForeignKey(PlanningLayoutDimension, on_delete=models.PROTECT)
+    value_id   = models.PositiveIntegerField(help_text="PK of the chosen dimension value")
+
+
+class DataRequestLog(models.Model):
+    """A log of every change made to a planning fact."""
+    # The batch or transaction this change belongs to
+    request     = models.ForeignKey(DataRequest, on_delete=models.PROTECT, related_name='log_entries')
+    
+    # A link to the specific fact record that was changed
+    fact        = models.ForeignKey(PlanningFact, on_delete=models.CASCADE)
+
+    # The actual change details
+    old_value   = models.DecimalField(max_digits=18, decimal_places=2)
+    new_value   = models.DecimalField(max_digits=18, decimal_places=2)
+    
+    # Metadata for the log entry
+    changed_at  = models.DateTimeField(auto_now_add=True)
+    changed_by  = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+
+    def __str__(self):
+        return f"{self.fact}: {self.old_value} → {self.new_value}"
+
+
 class PlanningFunction(models.Model):
     FUNCTION_CHOICES = [
         ('COPY', 'Copy'),
         ('DISTRIBUTE', 'Distribute'),
-        ('CURRENCY_CONVERT', 'Currency Convert'),        
+        ('CURRENCY_CONVERT', 'Currency Convert'),  
+        ('REPOST',     'Re-Post'),   
+        ('RESET_SLICE',     'Reset Slice'),    
     ]
     layout      = models.ForeignKey(PlanningLayout, on_delete=models.CASCADE)
     name        = models.CharField(max_length=50)
@@ -479,6 +432,8 @@ class PlanningFunction(models.Model):
             COPY: { "from_version": <vid>, "to_version": <vid>, "year":<y>, "period":"01" }  
             DISTRIBUTE: { "by":"OrgUnit", "reference_data":"2024 Actuals" }  
             CURRENCY_CONVERT: { "target_uom":"USD" }
+            REPOST:           {}                # no params
+            RESET_SLICE:      { "filters": { "<field>": <value>, … } }
         """
     )
     def execute(self, session):
@@ -489,75 +444,140 @@ class PlanningFunction(models.Model):
             return self._copy_data(session)
         if self.function_type == 'DISTRIBUTE':
             return self._distribute(session)
+        if self.function_type == 'REPOST':
+            return self._repost(session)        
         if self.function_type == 'CURRENCY_CONVERT':
             return self._currency_convert(session)
+        if self.function_type == 'RESET_SLICE':
+            return self._reset_slice(session)
 
-    def _copy_data(self, session):
+        # Unknown type
+        return 0
+        
+    def _copy_data(self, session: PlanningSession) -> int:
         """
-        Copy facts from one version→another (or actual→plan).
+        Copy all facts from this session to a new version within same layout/year.
         """
-        from bps.models import PlanningFact
-        src_vid = self.parameters['from_version']
-        tgt_vid = self.parameters['to_version']
-        year    = self.parameters.get('year')
-        period  = self.parameters.get('period')
-        src_facts = PlanningFact.objects.filter(
-            session__layout_year__version_id=src_vid,
-            session=session,
-            year_id=year,
-            period=period
+        params = self.parameters
+        src_version = session.layout_year.version
+        tgt_version = get_object_or_404(Version, pk=params['to_version'])
+        # find or create the target layout-year & session
+        tgt_ly, _ = PlanningLayoutYear.objects.get_or_create(
+            layout=session.layout_year.layout,
+            year=session.layout_year.year,
+            version=tgt_version,
         )
-        created = 0
-        for f in src_facts:
-            f.pk = None  # clone
-            f.request = None
-            f.session.layout_year.version_id = tgt_vid
-            f.save()
-            created += 1
-        return created
+        tgt_sess, _ = PlanningSession.objects.get_or_create(
+            layout_year=tgt_ly,
+            org_unit=session.org_unit,
+        )
+        # create a new DataRequest to hold the copied facts
+        new_req = DataRequest.objects.create(
+            session=tgt_sess,
+            description=f"Copy from v{src_version.code}"
+        )
 
-    def _distribute(self, session):
+        # bulk copy
+        new_facts = []
+        for fact in PlanningFact.objects.filter(session=session).iterator():
+            new_facts.append(PlanningFact(
+                request    = new_req,
+                session    = tgt_sess,
+                version    = tgt_version,
+                year       = fact.year,
+                period     = fact.period,
+                org_unit   = fact.org_unit,
+                service    = fact.service,
+                account    = fact.account,
+                dimension_values= fact.dimension_values,
+                key_figure = fact.key_figure,
+                value      = fact.value,
+                uom        = fact.uom,
+                ref_value  = fact.ref_value,
+                ref_uom    = fact.ref_uom,
+            ))
+        PlanningFact.objects.bulk_create(new_facts)
+        return len(new_facts)
+
+    def _distribute(self, session: PlanningSession) -> int:
         """
-        Top-down distribute session-level totals to row-dim values
-        by reference data proportions.
+        Distribute top-level reference total down into each fact by proportion.
         """
-        from bps.models import PlanningFact, ReferenceData
-        by = self.parameters['by']             # e.g. "OrgUnit"
-        ref_name = self.parameters['reference_data']
-        ref = ReferenceData.objects.get(name=ref_name)
-        # for each period / keyfigure
+        by     = self.parameters['by']                # e.g. "org_unit"
+        ref_nm = self.parameters['reference_data']    # e.g. "2024 Actuals"
+        ref    = get_object_or_404(ReferenceData, name=ref_nm)
+
         total = ref.fetch_reference_fact(**{by: None})['value__sum'] or 0
         if total == 0:
             return 0
-        # determine proportions
-        qs = PlanningFact.objects.filter(session=session)
+
+        updated = 0
+        with transaction.atomic():
+            for fact in PlanningFact.objects.filter(session=session):
+                proportion = fact.value / total
+                fact.value = proportion * total
+                fact.save(update_fields=['value'])
+                updated += 1
+
+        return updated
+
+    def _currency_convert(self, session: PlanningSession) -> int:
+        """
+        Revalue all facts in this session to a new UoM using ConversionRate.
+        """
+        tgt_code = self.parameters['target_uom']
+        tgt_uom  = get_object_or_404(UnitOfMeasure, code=tgt_code)
+        conv_map = {
+            (c.from_uom_id, c.to_uom_id): c.factor
+            for c in ConversionRate.objects.filter(to_uom=tgt_uom)
+        }
+
+        updated = 0
+        with transaction.atomic():
+            for fact in PlanningFact.objects.filter(session=session):
+                key = (fact.uom_id, tgt_uom.id)
+                if key not in conv_map:
+                    continue
+                fact.value = round(fact.value * conv_map[key], 4)
+                fact.uom   = tgt_uom
+                fact.save(update_fields=['value','uom'])
+                updated += 1
+
+        return updated
+
+    def _repost(self, session: PlanningSession) -> int:
+        """
+        Clone the last DataRequest + its facts, so you can "repost" identical data.
+        """
+        last_dr = session.requests.order_by('-created_at').first()
+        if not last_dr:
+            return 0
+
+        new_dr = DataRequest.objects.create(
+            session     = session,
+            description = f"Re-Post of {last_dr.id}",
+            created_by  = last_dr.created_by,
+        )
+
         created = 0
-        for f in qs:
-            share = f.value / total
-            f.value = share * total
-            f.save()
-            created += 1
+        with transaction.atomic():
+            for fact in PlanningFact.objects.filter(request=last_dr):
+                fact.pk      = None
+                fact.request = new_dr
+                fact.save()
+                created += 1
+
         return created
 
-    def _currency_convert(self, session):
+    def _reset_slice(self, session: PlanningSession) -> int:
         """
-        Revalue all facts to a new UoM using ConversionRate table.
+        Zero-out all facts in this session matching the given filters.
+        parameters = { "filters": {"org_unit_id": 5, "service_id": null, … } }
         """
-        from bps.models import PlanningFact, ConversionRate, UnitOfMeasure
-        tgt = self.parameters['target_uom']
-        tgt_uom = UnitOfMeasure.objects.get(code=tgt)
-        conv_map = {
-          (c.from_uom_id, c.to_uom_id): c.factor
-          for c in ConversionRate.objects.filter(to_uom=tgt_uom)
-        }
-        updated = 0
-        for f in PlanningFact.objects.filter(session=session):
-            key = (f.uom_id, tgt_uom.id)
-            if key not in conv_map: continue
-            f.value = round(f.value * conv_map[key], 4)
-            f.uom = tgt_uom
-            f.save()
-            updated += 1
+        filters = self.parameters.get('filters', {})
+        qs = PlanningFact.objects.filter(session=session, **filters)
+        # zero both plan & reference values
+        updated = qs.update(value=0, ref_value=0)
         return updated
 
 

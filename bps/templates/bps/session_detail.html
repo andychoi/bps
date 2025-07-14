@@ -41,6 +41,12 @@
       <button name="freeze" class="btn btn-danger">Freeze Session</button>
     </form>
   {% endif %}
+  {% if sess.current_step and sess.can_advance(request.user) %}
+    <form action="{% url 'bps:advance_stage' session_id=sess.pk %}" method="post" class="d-inline">
+      {% csrf_token %}
+      <button class="btn btn-sm btn-primary">Next Step ➡️</button>
+    </form>
+  {% endif %}  
 {% endblock %}
 
 {% block extra_js %}

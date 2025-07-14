@@ -1,0 +1,93 @@
+{% load user_tags %}
+{% is_original_user_superuser as orig_is_superuser %}
+{% if user.is_superuser or orig_is_superuser %}
+<li class="nav-item dropdown">
+  <a 
+    class="nav-link dropdown-toggle" 
+    href="#" 
+    id="loginAsDropdown" 
+    role="button" 
+    data-bs-toggle="dropdown" 
+    aria-expanded="false"
+  >
+    <i class="bi bi-people-fill"></i>
+    <span>Login as…</span>
+  </a>
+  <ul 
+    class="dropdown-menu dropdown-menu-end p-2" 
+    aria-labelledby="loginAsDropdown" 
+    style="min-width: 300px; max-height: 400px; overflow:auto;"
+    onshow="initLoginAsList()"
+  >
+    <input 
+      type="search" 
+      id="loginAsUserSearch" 
+      class="form-control mb-2" 
+      placeholder="Search users…" 
+      aria-label="Search users to impersonate"
+      onkeyup="filterLoginAsUsers()"
+    />
+
+    {% get_session_user_id as orig_id %}
+    {% if orig_id and user.id != orig_id %}
+      <li>
+        <a 
+          class="dropdown-item" 
+          href="{% url 'api-login-as' %}?user_pk={{ orig_id }}&next={{ request.path|urlencode }}"
+        >
+          ← Return to {{ user.username }}
+        </a>
+      </li>
+      <li><hr class="dropdown-divider"></li>
+    {% endif %}
+
+    <div id="loginAsUserList"></div>
+  </ul>
+</li>
+
+<script>
+  // Load initial list when dropdown opens
+  function initLoginAsList() {
+    filterLoginAsUsers();
+  }
+
+  // Render a single entry
+  function addUserToList(user) {
+    const list = document.getElementById('loginAsUserList');
+    const li = document.createElement('li');
+    li.className = 'dropdown-item p-1';
+    li.innerHTML = `
+      <a href="{% url 'api-login-as' %}?user_pk=${user.id}&next=${encodeURIComponent(window.location.pathname)}" class="d-flex justify-content-between align-items-center">
+        <span>
+          ${user.first_name} ${user.last_name} 
+          <small class="text-muted">(${user.alias || user.username})</small>
+        </span>
+        <small class="text-muted">${user.job_title || ''}</small>
+      </a>
+    `;
+    list.appendChild(li);
+  }
+
+  function filterLoginAsUsers(page = 1) {
+    const q = document.getElementById('loginAsUserSearch').value;
+    fetch("{% url 'api-user-search' %}?q=" + encodeURIComponent(q) + "&page=" + page)
+      .then(r => r.json())
+      .then(data => {
+        const list = document.getElementById('loginAsUserList');
+        if (page === 1) list.innerHTML = '';
+        data.users.forEach(addUserToList);
+        // Load-more button
+        document.getElementById('loadMoreBtn')?.remove();
+        if (data.has_more) {
+          const btn = document.createElement('button');
+          btn.id = 'loadMoreBtn';
+          btn.className = 'btn btn-outline-secondary btn-sm d-block mx-auto my-2';
+          btn.innerText = 'Load more…';
+          btn.onclick = () => filterLoginAsUsers(page + 1);
+          list.appendChild(btn);
+        }
+      })
+      .catch(console.error);
+  }
+</script>
+{% endif %}

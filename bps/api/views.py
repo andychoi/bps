@@ -24,11 +24,11 @@ class PlanningFactPivotedAPIView(APIView):
             except Version.DoesNotExist:
                 return Response({"error": "Invalid version code"}, status=400)
 
-        # Optional driver_refs filtering
+        # Optional dimension_values filtering
         for k, v in request.query_params.items():
             if k.startswith("driver_"):
                 driver_key = k.replace("driver_", "")
-                facts = facts.filter(driver_refs__has_key=driver_key).filter(driver_refs__contains={driver_key: v})
+                facts = facts.filter(dimension_values__has_key=driver_key).filter(dimension_values__contains={driver_key: v})
 
         use_ref_value = request.query_params.get("ref") == "1"
         pivoted = pivot_facts_grouped(facts, use_ref_value=use_ref_value)

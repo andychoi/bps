@@ -1,0 +1,24 @@
+<!-- manual_planning_table.html -->
+<button class="btn btn-sm btn-danger" onclick="resetData()">
+  🔄 Reset All
+</button>
+<script>
+function resetData() {
+  if (!confirm("This will zero out all existing values before saving. Continue?")) return;
+  fetch("/api/bps_planning_grid_update", {
+    method: "PATCH",
+    headers: {
+      "Content-Type":"application/json",
+      "X-CSRFToken":"{{ csrf_token }}"
+    },
+    body: JSON.stringify({
+      layout:   {{ layout.id }},
+      action_type: "RESET",
+      updates: []  // no individual cells needed, reset happens before manual edits
+    })
+  }).then(_=>{
+    table.replaceData();  // reload the grid
+    alert("All values have been reset to zero.");
+  });
+}
+</script>
