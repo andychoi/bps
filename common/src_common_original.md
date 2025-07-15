@@ -167,7 +167,7 @@ class OrgUnit(models.Model):
         'self', on_delete=models.SET_NULL, null=True, blank=True, related_name='sub_org', db_index=True
     )
     head = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
+        'User',
         on_delete=models.SET_NULL,
         null=True, blank=True,
         related_name='head_of_org',
