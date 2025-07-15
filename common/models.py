@@ -5,11 +5,12 @@ logger = logging.getLogger(__name__)
 from django.db import models
 from django.dispatch import receiver
 from django.utils.translation import gettext_lazy as _
+from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.contrib.auth.models import UserManager
 from django.utils.functional import cached_property
 # from treebeard.mp_tree import MP_Node
 from django.contrib.auth.models import AbstractUser
-from django.core.exceptions import ValidationError
 from .choices import USERTYPE_CHOICES, UserTypeChoices, OrgCategoryChoices
 from .models_base import BaseModel, ActiveManager     
 
@@ -46,8 +47,13 @@ class OrgUnit(models.Model):
         'self', on_delete=models.SET_NULL, null=True, blank=True, related_name='sub_org', db_index=True
     )
     head = models.ForeignKey(
-        'User', on_delete=models.SET_NULL, null=True, blank=True, related_name='head_of_org', db_index=True
-    )
+        'User',     #settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='head_of_org',
+        related_query_name='bps_orgunit_as_head',
+        db_index=True
+    )    
     cc_code = models.CharField( _("Cost Center Code"), max_length=10, blank=True, null=True, )
     class Meta:
         ordering = ['code']
@@ -214,7 +220,7 @@ class User(AbstractUser):
 
     """ AD attributes """
     alias = models.CharField(max_length=50, blank=True)                                 # displayName
-    manager = models.ForeignKey('users.user',  related_name='subordinates',  on_delete=models.SET_NULL, blank=True, null=True,)
+    manager = models.ForeignKey(settings.AUTH_USER_MODEL,  related_name='subordinates',  on_delete=models.SET_NULL, blank=True, null=True,)
     orgunit = models.ForeignKey(OrgUnit, verbose_name=_('Org Unit'), related_name='org_members', on_delete=models.SET_NULL, blank=True, null=True)
 
     company   = models.CharField(_('Company'), max_length=25, blank=True, null=True)    

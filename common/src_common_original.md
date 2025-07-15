@@ -5,20 +5,17 @@
 ### `apps.py`
 ```python
 from django.apps import AppConfig
-class UsersConfig(AppConfig):
-    name = 'users'
-    def ready(self):
-        import common.signals
 ```
 
 ### `autocomplete.py`
 ```python
 from dal import autocomplete
+from dal_select2.views import Select2QuerySetView
 from django.contrib.auth import get_user_model
 UserModel = get_user_model()
 from .models import OrgUnit, OrgLevel
 from django.db.models import Count, Q
-class UserAutocomplete(autocomplete.Select2QuerySetView):
+class UserAutocomplete(Select2QuerySetView):
     def get_queryset(self):
         qs = UserModel.objects.all()
         if self.q:
@@ -26,7 +23,7 @@ class UserAutocomplete(autocomplete.Select2QuerySetView):
                 Q(username__icontains=self.q) | Q(first_name__icontains=self.q) | Q(last_name__icontains=self.q)
             )
         return qs
-class AuthUserAutocomplete(autocomplete.Select2QuerySetView):
+class AuthUserAutocomplete(Select2QuerySetView):
     def get_queryset(self):
         if not self.request.user.is_authenticated:
             return UserModel.objects.none()
@@ -40,7 +37,7 @@ class AuthUserAutocomplete(autocomplete.Select2QuerySetView):
                 Q(username__icontains=self.q) | Q(first_name__icontains=self.q) | Q(last_name__icontains=self.q)
             )
         return qs
-class OrgUnitAutocomplete(autocomplete.Select2QuerySetView):
+class OrgUnitAutocomplete(Select2QuerySetView):
     def get_queryset(self):
         qs = OrgUnit.objects.filter(is_active=True)
         if not self.q:
@@ -93,54 +90,46 @@ class OrgCategoryChoices(models.TextChoices):
 ### `loginas.py`
 ```python
 from django.conf import settings
-from django.urls import path, re_path
-from django.http import HttpResponseRedirect
-from django.shortcuts import redirect
-from django.utils.http import url_has_allowed_host_and_scheme
+from django.shortcuts import redirect, resolve_url
 from django.contrib.auth import login, logout, get_user_model
-User = get_user_model()
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.contrib import messages
-from django.db.models import Q
 import logging
 logger = logging.getLogger(__name__)
+User = get_user_model()
 def login_as(request):
-    original_user_id = request.session.get('original_login_id', None)
-    original_user = User.objects.get(id=original_user_id) if original_user_id else request.user
-    if not original_user.is_superuser:
-        messages.error(request, "Access denied. Only superusers can use this feature.")
+    orig_id = request.session.get('original_login_id')
+    original = User.objects.filter(pk=orig_id).first() if orig_id else request.user
+    if not original.is_superuser:
+        messages.error(request, "Access denied: only superusers can impersonate.")
         return redirect(settings.LOGIN_REDIRECT_URL)
-    user = None
-    try:
-        user = User.objects.get(username=request.GET.get("username"))
-    except:
-        user_pk = request.GET.get('user_pk', None)
-        if user_pk:
-            try:
-                user = User.objects.get(pk=int(user_pk))
-            except User.DoesNotExist:
-                logger.warning(f"User {user_pk} does not exist")
-                return
-    if user:
-        original_login_id = request.session.get('original_login_id', request.user.id)
-        user.backend = 'django.contrib.auth.backends.ModelBackend'
-        login(request, user)
-        request.session.save()
-        if request.user.is_authenticated and request.user == user:
-            request.session['original_login_id'] = original_login_id
-            messages.success(request, f"Successfully logged in as {user.username}.")
-            logger.info(f"User {original_user.username} logged in as {user.username}")
-        else:
-            messages.error(request, "Login failed.")
-            logger.warning("User login failed for some reason.")
+    target = None
+    uname = request.GET.get("username")
+    if uname:
+        target = User.objects.filter(username=uname).first()
     else:
+        try:
+            pk = int(request.GET.get("user_pk", ""))
+            target = User.objects.filter(pk=pk).first()
+        except (ValueError, TypeError):
+            target = None
+    if not target:
         logout(request)
-        messages.warning(request, f"Logged out successfully.")
-        logger.info(f"User {request.user.username} was logged out.")
-    redirect_to = request.GET.get('next')
-    if redirect_to and url_has_allowed_host_and_scheme(redirect_to, None):
-        return HttpResponseRedirect(redirect_to)
-    else:
+        request.session.pop('original_login_id', None)
+        messages.warning(request, "Logged out successfully.")
+        logger.info(f"{original.username} ended impersonation")
         return redirect(settings.LOGIN_REDIRECT_URL)
+    if 'original_login_id' not in request.session:
+        request.session['original_login_id'] = original.pk
+    target.backend = 'django.contrib.auth.backends.ModelBackend'
+    login(request, target)
+    request.session.save()
+    messages.success(request, f"You are now impersonating {target.username}.")
+    logger.info(f"{original.username} is impersonating {target.username}")
+    next_url = request.GET.get('next') or settings.LOGIN_REDIRECT_URL
+    if url_has_allowed_host_and_scheme(next_url, {request.get_host()}):
+        return redirect(next_url)
+    return redirect(settings.LOGIN_REDIRECT_URL)
 ```
 
 ### `models.py`
@@ -150,6 +139,7 @@ logger = logging.getLogger(__name__)
 from django.db import models
 from django.dispatch import receiver
 from django.utils.translation import gettext_lazy as _
+from django.conf import settings
 from django.contrib.auth.models import UserManager
 from django.utils.functional import cached_property
 from django.contrib.auth.models import AbstractUser
@@ -168,7 +158,7 @@ class OrgUnit(models.Model):
     description = models.TextField(blank=True)
     category = models.CharField(_("Category"), max_length=10, choices=OrgCategoryChoices.choices,
                                 default=OrgCategoryChoices.NOT)
-    level = models.PositiveSmallIntegerField(choices=OrgLevel.choices, default=OrgLevel.NA)
+    level = models.PositiveSmallIntegerField(choices=OrgLevel.choices, default=OrgLevel.UNKNOWN)
     is_active = models.BooleanField(_("active"), default=True)
     objects = ActiveManager()
     all_objects = models.Manager()
@@ -177,7 +167,12 @@ class OrgUnit(models.Model):
         'self', on_delete=models.SET_NULL, null=True, blank=True, related_name='sub_org', db_index=True
     )
     head = models.ForeignKey(
-        'User', on_delete=models.SET_NULL, null=True, blank=True, related_name='head_of_org', db_index=True
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='head_of_org',
+        related_query_name='bps_orgunit_as_head',
+        db_index=True
     )
     cc_code = models.CharField( _("Cost Center Code"), max_length=10, blank=True, null=True, )
     class Meta:
@@ -269,7 +264,7 @@ class OrgunitRetired(OrgUnit):
         verbose_name = "Orgunit (retired)"
 class User(AbstractUser):
     alias = models.CharField(max_length=50, blank=True)
-    manager = models.ForeignKey('users.user',  related_name='subordinates',  on_delete=models.SET_NULL, blank=True, null=True,)
+    manager = models.ForeignKey(settings.AUTH_USER_MODEL,  related_name='subordinates',  on_delete=models.SET_NULL, blank=True, null=True,)
     orgunit = models.ForeignKey(OrgUnit, verbose_name=_('Org Unit'), related_name='org_members', on_delete=models.SET_NULL, blank=True, null=True)
     company   = models.CharField(_('Company'), max_length=25, blank=True, null=True)
     dept_name = models.CharField(_('Dept Name'), max_length=50, blank=True, null=True)
@@ -310,112 +305,29 @@ class UserInactive(User):
 ```python
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+from django.conf import settings
 class BaseModel(models.Model):
     created_at = models.DateTimeField(_("created at"), auto_now_add=True, editable=False)
     updated_on = models.DateTimeField(_("updated_on"), auto_now=True, editable=False)
-    created_by = models.ForeignKey('users.User', related_name='created_by_%(class)s_related', verbose_name=_('created by'),
-                                   on_delete=models.DO_NOTHING, null=True)
-    updated_by = models.ForeignKey('users.User', related_name='updated_by_%(class)s_related', verbose_name=_('updated by'),
-                                   on_delete=models.DO_NOTHING, null=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name='created_by_%(class)s_related',
+        verbose_name=_('created by'),
+        on_delete=models.DO_NOTHING,
+        null=True,
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name='updated_by_%(class)s_related',
+        verbose_name=_('updated by'),
+        on_delete=models.DO_NOTHING,
+        null=True,
+    )
     class Meta:
         abstract = True
 class ActiveManager(models.Manager):
     def get_queryset(self):
         return super().get_queryset().filter(is_active=True)
-```
-
-### `templates/nav-loginas.html`
-```html
-{% load tags %}
-{% load user_tags %}
-{% is_original_user_superuser as is_superuser %}
-{% if user.is_superuser or is_superuser %}
-<li id="login_as_menu" class="nav-item dropdown">
-    <a class="nav-link dropdown-toggle" href="#" id="navbarDropdownMenuLinkL" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-        <i class="bi bi-people-fill"></i>
-        <span>Login as...</span>
-    </a>
-    <ul class="dropdown-menu dropdown-menu-end p-3" aria-labelledby="navbarDropdownMenuLinkL">
-        <input type="text" id="loginAsUserSearch" class="form-control mb-2" placeholder="Search users..." onkeyup="filterLoginAsUsers()">
-        {% get_session_user_id as session_user_id %}
-        {% if user.id != session_user_id %}
-        <li class="dropdown-item">
-            <a href="{% url 'login_as' %}?user_pk={{ session_user_id }}&next={{ request.path }}">Return to Original User</a>
-        </li>
-        <li class="dropdown-divider"></li>
-        {% endif %}
-        <div id="loginAsUserList">
-        </div>
-    </ul>
-</li>
-<script>
-// Common function to add a user to the list
-function addUserToList(user, userList) {
-    const listItem = document.createElement('li');
-    listItem.className = 'dropdown-item';
-    listItem.innerHTML = `
-        <div class="d-flex justify-content-between">
-            <a href="/login_as/?user_pk=${user.id}&next=${encodeURIComponent(window.location.pathname)}">
-            ${user.first_name} ${user.last_name} <span class='text-muted'>${user.alias || ''}   - ${user.job_title || ''}</span>
-            </a>
-            <span class="ms-4"></span> 
-            <a href="/user_detail/${user.id}"><i class="bi bi-person text-muted"></i></a>
-        </div>
-    `;
-    userList.appendChild(listItem);
-}
-function filterLoginAsUsers() {
-    // Get the search input value
-    const searchInput = document.getElementById('loginAsUserSearch').value;
-    // Fetch the filtered results from the server
-    const url = `{% url 'user_search' %}?q=${encodeURIComponent(searchInput)}&page=1`;
-    fetch(url)
-        .then(response => response.json())
-        .then(data => {
-            const userList = document.getElementById('loginAsUserList');
-            userList.innerHTML = ''; // Clear existing list
-            // Add each user to the list using the common function
-            data.users.forEach(user => addUserToList(user, userList));
-            // Handle "Load more" button if there are more results
-            if (data.has_more) {
-                const loadMoreButton = document.createElement('button');
-                loadMoreButton.className = 'btn btn-secondary btn-sm mt-2';
-                loadMoreButton.innerText = 'Load more';
-                loadMoreButton.id = 'loadMoreButton'; // Assign an id for later reference
-                loadMoreButton.onclick = (e) => {
-                    e.stopPropagation(); // Prevent dropdown from closing
-                    loadMoreResults(searchInput, 2); // Start with page 2
-                };
-                userList.appendChild(loadMoreButton);
-            }
-        })
-        .catch(error => console.error('Error fetching users:', error));
-}
-// Function to load more results
-function loadMoreResults(searchInput, page) {
-    const url = `{% url 'user_search' %}?q=${encodeURIComponent(searchInput)}&page=${page}`;
-    fetch(url)
-        .then(response => response.json())
-        .then(data => {
-            const userList = document.getElementById('loginAsUserList');
-            // Add each additional user to the list using the common function
-            data.users.forEach(user => addUserToList(user, userList));
-            // Update or remove the load more button based on `has_more`
-            const loadMoreButton = document.getElementById('loadMoreButton');
-            if (data.has_more) {
-                const nextPage = page + 1;
-                loadMoreButton.onclick = (e) => {
-                    e.stopPropagation(); // Prevent dropdown from closing
-                    loadMoreResults(searchInput, nextPage);
-                };
-            } else if (loadMoreButton) {
-                loadMoreButton.remove(); // Remove if no more results
-            }
-        })
-        .catch(error => console.error('Error fetching more users:', error));
-}
-</script>
-{% endif %}
 ```
 
 ### `templatetags/user_tags.py`
@@ -465,10 +377,14 @@ def get_selected_user(context):
 from django.urls import path, re_path
 from .autocomplete import UserAutocomplete, OrgUnitAutocomplete
 from .loginas import login_as
+from .views import UserSearchJSON, loginas_list_view
+app_name = 'common'
 urlpatterns = [
+    path('api/user-search/', UserSearchJSON.as_view(), name='api-user-search'),
     path('user-autocomplete/', UserAutocomplete.as_view(), name='user-autocomplete'),
     path('orgunit-autocomplete/', OrgUnitAutocomplete.as_view(), name='orgunit-autocomplete'),
-    re_path(r'^login_as/$', login_as, name="login-as")
+    path('api/login_as/', login_as, name="api-login-as"),
+    path('loginas/', loginas_list_view, name='loginas_list'),
 ]
 ```
 
@@ -476,5 +392,41 @@ urlpatterns = [
 ```python
 from django.contrib.auth import get_user_model
 User = get_user_model()
+```
+
+### `views.py`
+```python
+from django.db.models import Q
+from django.views.generic import ListView
+from dal import autocomplete
+from django.http import JsonResponse
+from .autocomplete import AuthUserAutocomplete
+from .user import User
+from django.contrib.auth.decorators import user_passes_test
+from django.shortcuts import render
+@user_passes_test(lambda u: u.is_superuser)
+def loginas_list_view(request):
+    return render(request, "loginas_list.html")
+class UserSearchJSON(ListView):
+    model = User
+    http_method_names = ['get']
+    def get(self, request, *args, **kwargs):
+        search_term = request.GET.get('q', '')
+        users = User.objects.filter(
+            Q(username__icontains=search_term) |
+            Q(alias__icontains=search_term) |
+            Q(first_name__icontains=search_term) |
+            Q(last_name__icontains=search_term)
+        ).order_by('username').values('id', 'username', 'first_name', 'last_name', 'alias', 'job_title', 'dept_name', 'company')
+        users_list = list(users)
+        paginator = Paginator(users_list, 10)
+        page_number = request.GET.get('page', 1)
+        page_obj = paginator.get_page(page_number)
+        user_data = list(page_obj.object_list)
+        has_more = page_obj.has_next()
+        return JsonResponse({
+            'users': user_data,
+            'has_more': has_more
+        })
 ```
 

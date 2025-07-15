@@ -1,5 +1,6 @@
 # autocomplete.py
 from dal import autocomplete
+from dal_select2.views import Select2QuerySetView
 
 """ Select2 style issue: https://stackoverflow.com/questions/75249988/why-is-django-autocomplete-light-single-select-badly-styled-and-broken-when-mult
 """
@@ -8,7 +9,7 @@ UserModel = get_user_model()
 from .models import OrgUnit, OrgLevel
 from django.db.models import Count, Q
 
-class UserAutocomplete(autocomplete.Select2QuerySetView):
+class UserAutocomplete(Select2QuerySetView):
     def get_queryset(self):
         qs = UserModel.objects.all()
         if self.q:
@@ -17,7 +18,7 @@ class UserAutocomplete(autocomplete.Select2QuerySetView):
             )
         return qs
 
-class AuthUserAutocomplete(autocomplete.Select2QuerySetView):
+class AuthUserAutocomplete(Select2QuerySetView):
     def get_queryset(self):
         # Ensure the user is authenticated
         if not self.request.user.is_authenticated:
@@ -39,7 +40,7 @@ class AuthUserAutocomplete(autocomplete.Select2QuerySetView):
             )
         return qs
 
-class OrgUnitAutocomplete(autocomplete.Select2QuerySetView):
+class OrgUnitAutocomplete(Select2QuerySetView):
     def get_queryset(self):
         # start with all active units
         qs = OrgUnit.objects.filter(is_active=True)

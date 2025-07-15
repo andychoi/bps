@@ -39,11 +39,11 @@ class ConversionRate(models.Model):
     def __str__(self):
         return f"1 {self.from_uom} → {self.factor} {self.to_uom}"
     
-# ── 1. InfoObject Base & Dimension Models ─────────────────────────────────
+# ── InfoObject Base & Dimension Models ─────────────────────────────────
 from .models_dimension import *
 
 
-# RESOURCE
+# ── # RESOURCE Models ─────────────────────────────────
 from .models_resource import *
 
 
@@ -52,7 +52,8 @@ class UserMaster(models.Model):
     Links your custom user profile to OrgUnit & CostCenter.
     """
     user      = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-    org_unit  = models.ForeignKey(OrgUnit, on_delete=models.SET_NULL, null=True)
+    # org_unit  = models.ForeignKey(OrgUnit, on_delete=models.SET_NULL, null=True)
+    # FIXME
     cost_center = models.ForeignKey(CostCenter, on_delete=models.SET_NULL, null=True)
 
     def __str__(self):
@@ -85,66 +86,8 @@ class KeyFigure(models.Model):
 
 # ── 2. PlanningLayout & Year‐Scoped Layouts ─────────────────────────────────
 
-class PlanningLayout(models.Model):
-    """
-    Defines which dims & periods & key‐figures go into a layout.
-    """
-    code = models.CharField(max_length=100, unique=True)
-    name = models.CharField(max_length=200)
-    domain = models.CharField(max_length=100)  # e.g. 'resource', 'cost', 'demand'
-    default = models.BooleanField(default=False)
+from .models_layout import *
 
-    def __str__(self):
-        return self.code
-
-class PlanningDimension(models.Model):
-    """ Specifies what dimensions are visible, editable, filtered.
-    API, expose the distinct values for that dimension (e.g. GET /api/planning-grid/headers/?dim=Region&layout=123) and accept a query‐param like &Region=EMEA to filter.
-    """
-    layout = models.ForeignKey(PlanningLayout, related_name="dimensions", on_delete=models.CASCADE)
-    name = models.CharField(max_length=100)  # e.g. "SkillGroup", "System", "ServiceType"
-    label = models.CharField(max_length=100)
-    is_row = models.BooleanField(default=False)
-    is_column = models.BooleanField(default=False)
-    is_filter = models.BooleanField(default=True)
-    is_editable = models.BooleanField(default=False)
-    required = models.BooleanField(default=True)
-    data_source = models.CharField(max_length=100)  # optional: e.g. 'SkillGroup.objects.all()'
-    is_navigable = models.BooleanField(default=False,
-        help_text="If true, UI should render Prev/Next controls for this dimension"
-    )
-    display_order = models.PositiveSmallIntegerField(default=0)
-
-class PlanningKeyFigure(models.Model):
-    """ Key figures used in the layout: amount, quantity, derived ones.
-    """
-    layout = models.ForeignKey(PlanningLayout, related_name="key_figures", on_delete=models.CASCADE)
-    code = models.CharField(max_length=100)  # e.g. 'amount', 'quantity', 'cost_per_mm'
-    label = models.CharField(max_length=100)
-    is_editable = models.BooleanField(default=True)
-    is_computed = models.BooleanField(default=False)
-    formula = models.TextField(blank=True)  # e.g. 'amount = quantity * rate'
-
-class PlanningLayoutYear(models.Model):
-    """
-    Binds a PlanningLayout to a specific Year with its own dims.
-    Allows per‐year changes in dimensions.
-    """
-    layout = models.ForeignKey(PlanningLayout, on_delete=models.CASCADE, related_name='per_year')
-    year   = models.ForeignKey(Year, on_delete=models.CASCADE)
-    version= models.ForeignKey(Version, on_delete=models.CASCADE)
-    # which OrgUnits participate this year?
-    org_units = models.ManyToManyField(OrgUnit, blank=True)
-    # which dims (ContentTypes) are row dims
-    row_dims  = models.ManyToManyField(ContentType, blank=True)
-    # static dims in header
-    header_dims = models.JSONField(default=dict,
-                      help_text="e.g. {'Company':'ALL','Region':'EMEA'}")
-
-    class Meta:
-        unique_together = ('layout','year','version')
-    def __str__(self):
-        return f"{self.layout.name} – {self.year.code} / {self.version.code}"
 
 
 # ── 3. Period + Grouping ────────────────────────────────────────────────────
@@ -196,88 +139,7 @@ class PeriodGrouping(models.Model):
 
 # ── 4. Workflow: PlanningSession ────────────────────────────────────────────
 
-class PlanningStage(models.Model):
-    """
-    A single step in the planning process.
-        order   code    name    can_run_in_parallel
-        1   ENV_SETUP   Environment Setup   True
-        2   GLOBAL_VALUES   Global Planning Values  True
-        3   MANUAL_ORG  Manual Planning (per OrgUnit)   False
-        4   VALIDATE_MANUAL Validate Manual Planning    False
-        5   RUN_FUNCTIONS   Run Enterprise‐wide Functions   True
-        6   REVIEW_FINAL    Review & Finalize   False
-    """
-    code       = models.CharField(max_length=20, unique=True)
-    name       = models.CharField(max_length=100)
-    order      = models.PositiveSmallIntegerField(
-                   help_text="Determines execution order. Lower=earlier.")
-    can_run_in_parallel = models.BooleanField(
-                   default=False,
-                   help_text="If True, this step may execute alongside others.")
-    # e.g. 'delta', 'overwrite', etc. but DataRequest will get its own type.
-
-    class Meta:
-        ordering = ['order']
-
-    def __str__(self):
-        return f"{self.order}: {self.name}"
-
-class PlanningSession(models.Model):
-    """
-    One OrgUnit’s planning for one layout‐year.
-    """
-    layout_year = models.ForeignKey(PlanningLayoutYear, on_delete=models.CASCADE,
-                                    related_name='sessions')
-    org_unit    = models.ForeignKey(OrgUnit, on_delete=models.CASCADE,
-                                    help_text="Owner of this session")
-    created_by  = models.ForeignKey(settings.AUTH_USER_MODEL,
-                                    on_delete=models.SET_NULL, null=True, blank=True)
-    created_at  = models.DateTimeField(auto_now_add=True)
-    # Draft → Completed (owner) → Frozen (admin)
-    class Status(models.TextChoices):
-        DRAFT     = 'D','Draft'
-        FEEDBACK  = 'B','Return Back'
-        COMPLETED = 'C','Completed'
-        REVIEW    = 'R','Review'
-        FROZEN    = 'F','Frozen'
-    status      = models.CharField(max_length=1,
-                                   choices=Status.choices,
-                                   default=Status.DRAFT)
-    frozen_by   = models.ForeignKey(settings.AUTH_USER_MODEL,
-                                    on_delete=models.SET_NULL,
-                                    null=True, blank=True,
-                                    related_name='+')
-    frozen_at   = models.DateTimeField(null=True, blank=True)
-
-    """ 
-    - When you create a new session, set current_stage = PlanningStage.objects.get(order=1).
-    - In every view (manual planning, data-request creation, function runs, etc.) check
-    if not session.current_stage.can_run_in_parallel and session.current_stage.order != MY_STEP_ORDER:
-        raise PermissionDenied("Cannot do manual planning until stage 3 is reached.")
-    """
-    current_stage = models.ForeignKey(PlanningStage, on_delete=models.PROTECT, null=True, blank=True)
-
-    class Meta:
-        unique_together = ('layout_year','org_unit')
-    def __str__(self):
-        return f"{self.org_unit.name} – {self.layout_year}"
-
-    def can_edit(self, user):
-        if self.status == self.Status.DRAFT and user == self.org_unit.head_user:
-            return True
-        return False
-
-    def complete(self, user):
-        if user == self.org_unit.head_user:
-            self.status = self.Status.COMPLETED
-            self.save()
-
-    def freeze(self, user):
-        # planning admin only
-        self.status    = self.Status.FROZEN
-        self.frozen_by = user
-        self.frozen_at = models.functions.Now()
-        self.save()
+from .models_workflow import *
 
 
 # ── 5. Fact & EAV (as before) ───────────────────────────────────────────────
@@ -333,7 +195,7 @@ class PlanningFact(models.Model):
     ref_uom     = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name='+', null=True)
 
     class Meta:
-        unique_together = ('request', 'version', 'year', 'period', 'org_unit', 'service', 'account', 'key_figure', 'dimension_values')
+        unique_together = ('version', 'year', 'period', 'org_unit', 'service', 'account', 'key_figure', 'dimension_values')
         indexes = [
             models.Index(fields=['year', 'version', 'org_unit']),
             models.Index(fields=['key_figure']),
@@ -356,38 +218,6 @@ class PlanningFact(models.Model):
         ).factor
         return round(self.value * rate, 2)
 
-class PlanningLayoutDimension(models.Model):
-    """
-    Example in views
-        layout_dims = layout_year.layout_dimensions.filter(is_row=True).order_by('order')
-        ctx["lead_dimensions"] = [
-            {
-            "model": ld.content_type.model,
-            "label": ld.content_type.model_class()._meta.verbose_name,
-            "order": ld.order,
-            "allowed": ld.allowed_values,
-            "filters": ld.filter_criteria,
-            }
-            for ld in layout_dims
-        ]    
-    """
-    layout_year    = models.ForeignKey(PlanningLayoutYear,
-                                       on_delete=models.CASCADE,
-                                       related_name="layout_dimensions")
-    content_type   = models.ForeignKey(ContentType,
-                                       on_delete=models.CASCADE)
-    is_row         = models.BooleanField(default=False)
-    is_column      = models.BooleanField(default=False)
-
-    order          = models.PositiveSmallIntegerField(default=0,
-                        help_text="Defines the sequence in the grid")
-
-    # Optional: constrain available values
-    allowed_values = models.JSONField(blank=True, default=list,
-                        help_text="List of allowed PKs or codes")
-    filter_criteria= models.JSONField(blank=True, default=dict,
-                        help_text="Extra filters to apply when building headers")
-    
 
 class PlanningFactDimension(models.Model):
     fact       = models.ForeignKey(PlanningFact, on_delete=models.CASCADE, related_name="fact_dimensions")

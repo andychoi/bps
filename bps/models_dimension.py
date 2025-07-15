@@ -41,6 +41,8 @@ class OrgUnit(MP_Node, InfoObject):
     head_user      = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='bps_orgunits_headed',
+        related_query_name='bps_orgunit_headed',
         help_text="OrgUnit lead who must draft and approve"
     )
     cc_code    = models.CharField(max_length=10, blank=True)    # SAP cost center code

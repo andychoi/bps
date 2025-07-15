@@ -6,7 +6,7 @@ from .models import (
     Constant, SubFormula, Formula, FormulaRun, FormulaRunEntry,
     PlanningFunction, ReferenceData, Position, RateCard, 
     Year, Version, OrgUnit, Account, Service, CBU, CostCenter, InternalOrder,
-    SLAProfile, KeyFigure,
+    SLAProfile, KeyFigure, DataRequestLog, 
     PlanningLayout, PlanningDimension, PlanningKeyFigure, PlanningLayoutYear,
     Period, PeriodGrouping,
     PlanningSession, DataRequest, PlanningFact, 
@@ -86,8 +86,8 @@ class SkillAdmin(admin.ModelAdmin):
 
 @admin.register(Resource)
 class ResourceAdmin(admin.ModelAdmin):
-    list_display = ('unique_id','display_name','resource_category','current_skill','current_level')
-    list_filter = ('resource_category','current_skill','current_level')
+    list_display = ('unique_id','display_name','resource_type','current_skill','current_level')
+    list_filter = ('resource_type','current_skill','current_level')
     search_fields = ('unique_id','display_name')
 
 
@@ -172,12 +172,19 @@ class FactInline(admin.TabularInline):
     show_change_link = True
     verbose_name_plural = "Planning Facts"
 
+class DataRequestLogInline(admin.TabularInline):
+    model = DataRequestLog
+    extra = 0
+    readonly_fields = ('fact','old_value','new_value','changed_at','changed_by')
+    fields = readonly_fields
+    can_delete = False
+    show_change_link = True
+    verbose_name_plural = "Change Log"
+
 @admin.register(DataRequest)
 class DataRequestAdmin(admin.ModelAdmin):
-    list_display   = ('id', 'session', 'description', 'created_at')
-    list_filter    = ('session__layout_year__layout',)
-    search_fields  = ('description', 'id')
-    inlines        = [FactInline]
+    list_display  = ('id','session','description','created_at')
+    inlines       = [DataRequestLogInline]
 
 @admin.register(PlanningFact)
 class PlanningFactAdmin(admin.ModelAdmin):
@@ -187,20 +194,20 @@ class PlanningFactAdmin(admin.ModelAdmin):
     )
     list_filter   = ('year','period','uom','service','account','key_figure')
     search_fields = ('dimension_values',)
-    readonly_fields = ('request',)
+    readonly_fields = ()
 
 
 @admin.register(Position)
 class PositionAdmin(admin.ModelAdmin):
-    list_display = ('year', 'code', 'name', 'skill', 'level', 'orgunit', 'fte', 'is_open', 'intended_resource_category', 'filled_by_resource')
-    list_filter = ('year', 'skill', 'level', 'is_open', 'intended_resource_category')
+    list_display = ('year', 'code', 'name', 'skill', 'level', 'orgunit', 'fte', 'is_open', 'intended_resource_type', 'filled_by_resource')
+    list_filter = ('year', 'skill', 'level', 'is_open', 'intended_resource_type')
     search_fields = ('code', 'name', 'skill__name', 'level')
     ordering = ('year__code', 'skill', 'level', 'code')
     fieldsets = (
         (None, {
             'fields': (
                 'year', 'code', 'name', 'skill', 'level', 'orgunit',
-                'fte', 'is_open', 'intended_resource_category', 'filled_by_resource'
+                'fte', 'is_open', 'intended_resource_type', 'filled_by_resource'
             )
         }),
     )
@@ -220,6 +227,7 @@ class RateCardAdmin(admin.ModelAdmin):
 
 @admin.register(PlanningStage)
 class PlanningStageAdmin(admin.ModelAdmin):
-    list_display = ('order','code','name','can_run_in_parallel')
-    list_editable = ('order','name','can_run_in_parallel')
-    ordering = ('order',)
+    list_display       = ('order','code','name','can_run_in_parallel')
+    list_display_links = ('code',)
+    list_editable      = ('order','name','can_run_in_parallel')
+    ordering           = ('order',)

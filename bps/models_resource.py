@@ -21,19 +21,19 @@ class RateCard(models.Model):
                                             help_text="0.00-1.00")
     class Meta:
         unique_together = ('skill', 'level', 'resource_type', 'country')
-        ordering = ['skill','level','resource_category','country']
+        ordering = ['skill','level','resource_type','country']
         verbose_name = "Rate Card Template"
         verbose_name_plural = "Rate Card Templates"
 
     def __str__(self):
-        return (f"{self.resource_category} | {self.skill} ({self.level}) @ "
+        return (f"{self.resource_type} | {self.skill} ({self.level}) @ "
                 f"{self.country}")
     
     # You'll need logic (perhaps in a signal or a custom save method)
     # to calculate `hourly_rate` from its components for 'EMP' types.
     """
     def save(self, *args, **kwargs):
-        if self.resource_category == 'EMP':
+        if self.resource_type == 'EMP':
             self.hourly_rate = (self.base_salary_hourly_equiv or 0) + \
                                (self.benefits_hourly_equiv or 0) + \
                                (self.payroll_tax_hourly_equiv or 0) + \
@@ -94,7 +94,7 @@ class Position(InfoObject):
     orgunit     = models.ForeignKey(OrgUnit, on_delete=models.PROTECT, null=True, blank=True) 
     fte         = models.FloatField(default=1.0)        # FTE equivalent
     is_open     = models.BooleanField(default=False)    # open vs. filled
-    intended_resource_category = models.CharField(
+    intended_resource_type = models.CharField(
         max_length=20,
         choices=RateCard.RESOURCE_CHOICES,
         default='EMP', # Assume internal unless specified
