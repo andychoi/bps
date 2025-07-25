@@ -169,7 +169,7 @@ class PlanningFact(models.Model):
     Core Models (EAV-style with fixed dimension FK)
     One “row” of plan data for a given DataRequest + Period.
     """
-    # request     = models.ForeignKey(DataRequest, on_delete=models.PROTECT)    # move to ReqeustLogs
+    request     = models.ForeignKey(DataRequest, on_delete=models.PROTECT)    # move to ReqeustLogs
     session     = models.ForeignKey(PlanningSession, on_delete=models.CASCADE)
     version     = models.ForeignKey(Version, on_delete=models.PROTECT)
 
@@ -311,7 +311,7 @@ class PlanningFunction(models.Model):
         new_facts = []
         for fact in PlanningFact.objects.filter(session=session).iterator():
             new_facts.append(PlanningFact(
-                # request    = new_req,
+                request    = new_req,
                 session    = tgt_sess,
                 version    = tgt_version,
                 year       = fact.year,

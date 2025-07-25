@@ -163,13 +163,13 @@ class Command(BaseCommand):
                             for period in Period.objects.all():
                                 # FTE actual
                                 PlanningFact.objects.update_or_create(
-                                    session=ps,version=version,year=year,period=period,org_unit=org,service=svc,account=None,
+                                    request=dr,session=ps,version=version,year=year,period=period,org_unit=org,service=svc,account=None,
                                     dimension_values={'Type':'Actual'},key_figure=KeyFigure.objects.get(code='FTE'),
                                     defaults={'value':round(random.uniform(1,8),2),'uom':hrs,'ref_value':0,'ref_uom':None}
                                 )
                                 # COST actual
                                 PlanningFact.objects.update_or_create(
-                                    session=ps,version=version,year=year,period=period,org_unit=org,service=svc,account=None,
+                                    request=dr,session=ps,version=version,year=year,period=period,org_unit=org,service=svc,account=None,
                                     dimension_values={'Type':'Actual'},key_figure=KeyFigure.objects.get(code='COST'),
                                     defaults={'value':round(random.uniform(1000,5000),2),'uom':usd,'ref_value':0,'ref_uom':None}
                                 )
@@ -180,34 +180,34 @@ class Command(BaseCommand):
                             for scen,vcode in SCENARIOS.items():
                                 ver=Version.objects.get(code=vcode)
                                 PlanningFact.objects.update_or_create(
-                                    session=ps,version=ver,year=year,period=period,org_unit=org,service=svc,account=None,
+                                    request=dr,session=ps,version=ver,year=year,period=period,org_unit=org,service=svc,account=None,
                                     dimension_values={'Scenario':scen},key_figure=KeyFigure.objects.get(code='FTE'),
                                     defaults={'value':round(random.uniform(1,8),2),'uom':hrs,'ref_value':0,'ref_uom':None}
                                 )
                                 for country in OUTSOURCING_COUNTRIES:
                                     PlanningFact.objects.update_or_create(
-                                        session=ps,version=ver,year=year,period=period,org_unit=org,service=svc,account=None,
+                                        request=dr,session=ps,version=ver,year=year,period=period,org_unit=org,service=svc,account=None,
                                         dimension_values={'Scenario':scen,'Type':'Outsourced','Country':country},key_figure=KeyFigure.objects.get(code='FTE'),
                                         defaults={'value':round(random.uniform(0,2),2),'uom':hrs,'ref_value':0,'ref_uom':None}
                                     )
                             # labor cost
                             PlanningFact.objects.update_or_create(
-                                session=ps,version=ver,year=year,period=period,org_unit=org,service=svc,account=None,dimension_values={},
+                                request=dr,session=ps,version=ver,year=year,period=period,org_unit=org,service=svc,account=None,dimension_values={},
                                 key_figure=KeyFigure.objects.get(code='COST'),defaults={'value':round(random.uniform(50,150)*random.uniform(1,8),2),'uom':usd,'ref_value':0,'ref_uom':None}
                             )
                             # license cost
                             PlanningFact.objects.update_or_create(
-                                session=ps,version=ver,year=year,period=period,org_unit=org,service=svc,account=None,
+                                request=dr,session=ps,version=ver,year=year,period=period,org_unit=org,service=svc,account=None,
                                 dimension_values={'Driver':random.choice(['UserCount','ServerCount'])},key_figure=KeyFigure.objects.get(code='LICENSE'),
                                 defaults={'value':round(random.randint(10,100)*random.uniform(1,12),2),'uom':ea,'ref_value':0,'ref_uom':None}
                             )
                     # admin & orgmgmt & shared
                     first_period=Period.objects.get(code='01')
-                    PlanningFact.objects.update_or_create(session=ps,version=Version.objects.get(code='DRAFT'),year=year,period=first_period,org_unit=org,service=None,account=None,dimension_values={'Type':'Admin'},key_figure=KeyFigure.objects.get(code='ADMIN'),defaults={'value':round(random.uniform(1000,5000),2),'uom':usd,'ref_value':0,'ref_uom':None})
-                    PlanningFact.objects.update_or_create(session=ps,version=Version.objects.get(code='DRAFT'),year=year,period=first_period,org_unit=org,service=None,account=None,dimension_values={'Type':'OrgMgmtCost'},key_figure=KeyFigure.objects.get(code='COST'),defaults={'value':round(random.uniform(5000,15000),2),'uom':usd,'ref_value':0,'ref_uom':None})
+                    PlanningFact.objects.update_or_create(request=dr,session=ps,version=Version.objects.get(code='DRAFT'),year=year,period=first_period,org_unit=org,service=None,account=None,dimension_values={'Type':'Admin'},key_figure=KeyFigure.objects.get(code='ADMIN'),defaults={'value':round(random.uniform(1000,5000),2),'uom':usd,'ref_value':0,'ref_uom':None})
+                    PlanningFact.objects.update_or_create(request=dr,session=ps,version=Version.objects.get(code='DRAFT'),year=year,period=first_period,org_unit=org,service=None,account=None,dimension_values={'Type':'OrgMgmtCost'},key_figure=KeyFigure.objects.get(code='COST'),defaults={'value':round(random.uniform(5000,15000),2),'uom':usd,'ref_value':0,'ref_uom':None})
                     if shared_service:
                         for cbu in CBU.objects.filter(is_active=True):
-                            PlanningFact.objects.update_or_create(session=ps,version=Version.objects.get(code='DRAFT'),year=year,period=first_period,org_unit=org,service=shared_service,account=None,dimension_values={'Type':'SharedService','CBU':cbu.code},key_figure=KeyFigure.objects.get(code='COST'),defaults={'value':round(random.uniform(2000,8000),2),'uom':usd,'ref_value':0,'ref_uom':None})
+                            PlanningFact.objects.update_or_create(request=dr,session=ps,version=Version.objects.get(code='DRAFT'),year=year,period=first_period,org_unit=org,service=shared_service,account=None,dimension_values={'Type':'SharedService','CBU':cbu.code},key_figure=KeyFigure.objects.get(code='COST'),defaults={'value':round(random.uniform(2000,8000),2),'uom':usd,'ref_value':0,'ref_uom':None})
 
         # 11. Formula machinery
         tax_rate,_=Constant.objects.get_or_create(name='TAX_RATE',defaults={'value':Decimal('0.15')})
