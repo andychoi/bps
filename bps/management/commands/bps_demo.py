@@ -9,6 +9,7 @@ from bps.models import (
     UnitOfMeasure, ConversionRate,
     Year, Version, Period,
     OrgUnit, Service, CostCenter,
+    Skill,
     InternalOrder, CBU, SLAProfile,
     KeyFigure, PlanningLayout, PlanningLayoutYear,
     PlanningSession, DataRequest, PlanningFact,
@@ -40,6 +41,12 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         admin = User.objects.filter(is_superuser=True).first()
+
+        # 0. Seed Skill lookup map
+        skill_map = {}
+        for name in SKILLS:
+            obj, _ = Skill.objects.get_or_create(name=name)
+            skill_map[name] = obj
 
         # 1. UOM & conversions
         hrs, _ = UnitOfMeasure.objects.get_or_create(code='HRS', defaults={'name':'Hours','is_base':True})
@@ -95,14 +102,20 @@ class Command(BaseCommand):
         # 5. Positions per year
         for y in years:
             for sg in SKILLS:
+                skill_obj = skill_map[sg]
                 for lvl in SENIORITY_LEVELS:
                     for open_flag in (False,True):
                         suffix=lvl[:1] + ('-OP' if open_flag else '')
                         code=f"POS-{sg[:3].upper()}-{suffix}"
                         Position.objects.get_or_create(
                             year=y, code=code,
-                            defaults={'name':f"{sg} {lvl}{' (Open)' if open_flag else ''}",
-                                      'skill':sg,'level':lvl,'fte':1.0,'is_open':open_flag}
+                            defaults={
+                                'name': f"{sg} {lvl}{' (Open)' if open_flag else ''}",
+                                'skill': skill_obj,
+                                'level': lvl,
+                                'fte': 1.0,
+                                'is_open': open_flag
+                            }
                         )
         # assign users to 2025 filled
         filled=Position.objects.filter(year__code='2025',is_open=False)
@@ -112,9 +125,10 @@ class Command(BaseCommand):
         # 6. RateCards per year
         for y in years:
             for sg in SKILLS:
+                skill_obj = skill_map[sg]
                 for country in OUTSOURCING_COUNTRIES:
                     RateCard.objects.get_or_create(
-                        year=y,skill=sg,
+                        year=y,skill=skill_obj,
                         resource_type=random.choice(['Contractor','MSP']),
                         country=country,
                         defaults={'efficiency_factor':round(random.uniform(0.7,1.0),2),'hourly_rate':round(random.uniform(20,120),2)}
@@ -135,7 +149,7 @@ class Command(BaseCommand):
             KeyFigure.objects.get_or_create(code=code,defaults={'name':name,'is_percent':pct,'default_uom':uom})
 
         # 10. Planning Layout & Facts
-        layout,_=PlanningLayout.objects.get_or_create(code='DEMOC',defaults={'title':'Demo Planning','domain':'cost','default':True})
+        layout,_=PlanningLayout.objects.get_or_create(code='DEMOC',defaults={'name':'Demo Planning','domain':'cost','default':True})
         for year in years:
             for version in Version.objects.all():
                 ply,_=PlanningLayoutYear.objects.get_or_create(layout=layout,year=year,version=version)
@@ -149,13 +163,13 @@ class Command(BaseCommand):
                             for period in Period.objects.all():
                                 # FTE actual
                                 PlanningFact.objects.update_or_create(
-                                    request=dr,session=ps,version=version,year=year,period=period,org_unit=org,service=svc,account=None,
+                                    session=ps,version=version,year=year,period=period,org_unit=org,service=svc,account=None,
                                     dimension_values={'Type':'Actual'},key_figure=KeyFigure.objects.get(code='FTE'),
                                     defaults={'value':round(random.uniform(1,8),2),'uom':hrs,'ref_value':0,'ref_uom':None}
                                 )
                                 # COST actual
                                 PlanningFact.objects.update_or_create(
-                                    request=dr,session=ps,version=version,year=year,period=period,org_unit=org,service=svc,account=None,
+                                    session=ps,version=version,year=year,period=period,org_unit=org,service=svc,account=None,
                                     dimension_values={'Type':'Actual'},key_figure=KeyFigure.objects.get(code='COST'),
                                     defaults={'value':round(random.uniform(1000,5000),2),'uom':usd,'ref_value':0,'ref_uom':None}
                                 )
@@ -166,34 +180,34 @@ class Command(BaseCommand):
                             for scen,vcode in SCENARIOS.items():
                                 ver=Version.objects.get(code=vcode)
                                 PlanningFact.objects.update_or_create(
-                                    request=dr,session=ps,version=ver,year=year,period=period,org_unit=org,service=svc,account=None,
+                                    session=ps,version=ver,year=year,period=period,org_unit=org,service=svc,account=None,
                                     dimension_values={'Scenario':scen},key_figure=KeyFigure.objects.get(code='FTE'),
                                     defaults={'value':round(random.uniform(1,8),2),'uom':hrs,'ref_value':0,'ref_uom':None}
                                 )
                                 for country in OUTSOURCING_COUNTRIES:
                                     PlanningFact.objects.update_or_create(
-                                        request=dr,session=ps,version=ver,year=year,period=period,org_unit=org,service=svc,account=None,
+                                        session=ps,version=ver,year=year,period=period,org_unit=org,service=svc,account=None,
                                         dimension_values={'Scenario':scen,'Type':'Outsourced','Country':country},key_figure=KeyFigure.objects.get(code='FTE'),
                                         defaults={'value':round(random.uniform(0,2),2),'uom':hrs,'ref_value':0,'ref_uom':None}
                                     )
                             # labor cost
                             PlanningFact.objects.update_or_create(
-                                request=dr,session=ps,version=ver,year=year,period=period,org_unit=org,service=svc,account=None,dimension_values={},
+                                session=ps,version=ver,year=year,period=period,org_unit=org,service=svc,account=None,dimension_values={},
                                 key_figure=KeyFigure.objects.get(code='COST'),defaults={'value':round(random.uniform(50,150)*random.uniform(1,8),2),'uom':usd,'ref_value':0,'ref_uom':None}
                             )
                             # license cost
                             PlanningFact.objects.update_or_create(
-                                request=dr,session=ps,version=ver,year=year,period=period,org_unit=org,service=svc,account=None,
+                                session=ps,version=ver,year=year,period=period,org_unit=org,service=svc,account=None,
                                 dimension_values={'Driver':random.choice(['UserCount','ServerCount'])},key_figure=KeyFigure.objects.get(code='LICENSE'),
                                 defaults={'value':round(random.randint(10,100)*random.uniform(1,12),2),'uom':ea,'ref_value':0,'ref_uom':None}
                             )
                     # admin & orgmgmt & shared
                     first_period=Period.objects.get(code='01')
-                    PlanningFact.objects.update_or_create(request=dr,session=ps,version=Version.objects.get(code='DRAFT'),year=year,period=first_period,org_unit=org,service=None,account=None,dimension_values={'Type':'Admin'},key_figure=KeyFigure.objects.get(code='ADMIN'),defaults={'value':round(random.uniform(1000,5000),2),'uom':usd,'ref_value':0,'ref_uom':None})
-                    PlanningFact.objects.update_or_create(request=dr,session=ps,version=Version.objects.get(code='DRAFT'),year=year,period=first_period,org_unit=org,service=None,account=None,dimension_values={'Type':'OrgMgmtCost'},key_figure=KeyFigure.objects.get(code='COST'),defaults={'value':round(random.uniform(5000,15000),2),'uom':usd,'ref_value':0,'ref_uom':None})
+                    PlanningFact.objects.update_or_create(session=ps,version=Version.objects.get(code='DRAFT'),year=year,period=first_period,org_unit=org,service=None,account=None,dimension_values={'Type':'Admin'},key_figure=KeyFigure.objects.get(code='ADMIN'),defaults={'value':round(random.uniform(1000,5000),2),'uom':usd,'ref_value':0,'ref_uom':None})
+                    PlanningFact.objects.update_or_create(session=ps,version=Version.objects.get(code='DRAFT'),year=year,period=first_period,org_unit=org,service=None,account=None,dimension_values={'Type':'OrgMgmtCost'},key_figure=KeyFigure.objects.get(code='COST'),defaults={'value':round(random.uniform(5000,15000),2),'uom':usd,'ref_value':0,'ref_uom':None})
                     if shared_service:
                         for cbu in CBU.objects.filter(is_active=True):
-                            PlanningFact.objects.update_or_create(request=dr,session=ps,version=Version.objects.get(code='DRAFT'),year=year,period=first_period,org_unit=org,service=shared_service,account=None,dimension_values={'Type':'SharedService','CBU':cbu.code},key_figure=KeyFigure.objects.get(code='COST'),defaults={'value':round(random.uniform(2000,8000),2),'uom':usd,'ref_value':0,'ref_uom':None})
+                            PlanningFact.objects.update_or_create(session=ps,version=Version.objects.get(code='DRAFT'),year=year,period=first_period,org_unit=org,service=shared_service,account=None,dimension_values={'Type':'SharedService','CBU':cbu.code},key_figure=KeyFigure.objects.get(code='COST'),defaults={'value':round(random.uniform(2000,8000),2),'uom':usd,'ref_value':0,'ref_uom':None})
 
         # 11. Formula machinery
         tax_rate,_=Constant.objects.get_or_create(name='TAX_RATE',defaults={'value':Decimal('0.15')})

@@ -311,7 +311,7 @@ class PlanningFunction(models.Model):
         new_facts = []
         for fact in PlanningFact.objects.filter(session=session).iterator():
             new_facts.append(PlanningFact(
-                request    = new_req,
+                # request    = new_req,
                 session    = tgt_sess,
                 version    = tgt_version,
                 year       = fact.year,

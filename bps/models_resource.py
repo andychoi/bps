@@ -13,14 +13,17 @@ class RateCard(models.Model):
     """
     RESOURCE_CHOICES = [('EMP', 'Employee'), ('CON','Contractor'), ('MSP','MSP')]
 
+    year = models.ForeignKey('Year', on_delete=models.CASCADE)
     skill = models.ForeignKey(Skill, on_delete=models.PROTECT) # Use PROTECT to prevent deleting skills in use
     level             = models.CharField(max_length=20)      # e.g. Junior/Mid/Senior
     resource_type       = models.CharField(max_length=20, choices=RESOURCE_CHOICES)
     country           = models.CharField(max_length=50)
     efficiency_factor = models.DecimalField(default=1.00, max_digits=5, decimal_places=2,
                                             help_text="0.00-1.00")
+    hourly_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
     class Meta:
-        unique_together = ('skill', 'level', 'resource_type', 'country')
+        unique_together = ('year','skill','level','resource_type','country')
         ordering = ['skill','level','resource_type','country']
         verbose_name = "Rate Card Template"
         verbose_name_plural = "Rate Card Templates"
