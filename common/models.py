@@ -163,7 +163,7 @@ class OrgUnit(models.Model):
 
     def get_managers_and_higher(self):
 
-        from .models import User  # Adjust import path as per your project structure
+        from .models.models import User  # Adjust import path as per your project structure
 
         # Get all ancestors including the current org unit
         all_units = self.get_ancestors() + [self]

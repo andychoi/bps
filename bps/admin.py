@@ -1,7 +1,7 @@
 # bps/admin.py
 from django.contrib import admin
 from django.contrib.contenttypes.admin import GenericTabularInline
-from .models import (
+from .models.models import (
     UnitOfMeasure, ConversionRate,
     Constant, SubFormula, Formula, FormulaRun, FormulaRunEntry,
     PlanningFunction, ReferenceData, Position, RateCard, 

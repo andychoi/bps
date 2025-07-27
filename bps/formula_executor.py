@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Any, Dict, List
 from django.apps import apps
 from django.db.models import Sum, Avg, Min, Max, Q
-from bps.models import (
+from bps.models.models import (
     PlanningFact, Formula, Constant, SubFormula,
     FormulaRun, FormulaRunEntry, ReferenceData, Period
 )

@@ -1,0 +1,222 @@
+{# templates/bps/_tabulator.html #}
+<link
+  rel="stylesheet"
+  href="https://cdn.jsdelivr.net/npm/tabulator-tables@6.2.1/dist/css/tabulator_bootstrap5.min.css"
+/>
+
+<div
+  id="tabulator-app"
+  data-api-url="{{ api_url }}"
+  data-detail-tmpl="{{ detail_url }}"
+  data-change-tmpl="{{ change_url }}"
+  data-create-url="{{ create_url }}"
+  data-export-url="{{ export_url }}"
+  data-owner-update-tmpl="{{ owner_update_url }}"
+  data-orgunit-update-tmpl="{{ orgunit_update_url }}"
+  data-user-autocomplete-url="{{ user_ac_url }}"
+  data-orgunit-autocomplete-url="{{ orgunit_ac_url }}"
+></div>
+
+<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3/dist/js/tabulator.min.js"></script>
+
+<script>
+// --- CSRF helper ---
+function getCookie(name) {
+  let v = null;
+  document.cookie.split(';').forEach(c => {
+    c = c.trim();
+    if (c.startsWith(name + '=')) {
+      v = decodeURIComponent(c.slice(name.length + 1));
+    }
+  });
+  return v;
+}
+const csrftoken = getCookie("csrftoken");
+
+// --- style for editable cells ---
+const style = document.createElement("style");
+style.innerHTML = `
+  .tabulator-cell.editable-cell {
+    background-color: #fff8dc !important;
+  }
+`;
+document.head.appendChild(style);
+
+// --- generic autocomplete editor factory ---
+function makeAutocompleteEditor(endpoint) {
+  return function(cell, onRendered, success, cancel) {
+    const input = document.createElement("input");
+    input.type = "search";
+    input.placeholder = "Search…";
+    input.value = cell.getValue()?.display || "";
+    Object.assign(input.style, {
+      padding: "4px",
+      width: "100%",
+      boxSizing: "border-box"
+    });
+    onRendered(() => input.focus());
+
+    let list;
+    const lookup = async term => {
+      const res = await axios.get(endpoint, {
+        params: { q: term },
+        withCredentials: true,
+        headers: { "X-CSRFToken": csrftoken }
+      });
+      return res.data.results.map(u => ({
+        label: u.text,
+        value: u.id
+      }));
+    };
+
+    const showList = async () => {
+      const items = await lookup(input.value);
+      if (list) list.remove();
+      list = document.createElement("div");
+      list.className = "list-group";
+      Object.assign(list.style, {
+        position: "absolute",
+        zIndex: 10000,
+        maxHeight: "150px",
+        overflowY: "auto"
+      });
+      items.forEach(it => {
+        const a = document.createElement("a");
+        a.className = "list-group-item list-group-item-action";
+        a.innerText = it.label;
+        a.onclick = () => {
+          success({ id: it.value, display: it.label });
+          list.remove();
+        };
+        list.appendChild(a);
+      });
+      document.body.appendChild(list);
+      const r = input.getBoundingClientRect();
+      list.style.top = `${r.bottom}px`;
+      list.style.left = `${r.left}px`;
+      document.addEventListener("click", () => list.remove(), {
+        once: true
+      });
+    };
+
+    input.addEventListener("input", showList);
+    input.addEventListener("blur", () => setTimeout(cancel, 150));
+    return input;
+  };
+}
+
+// --- mount Tabulator inside Vue ---
+const { createApp, onMounted } = Vue;
+
+createApp({
+  setup() {
+    const el = document.getElementById("tabulator-app");
+
+    // pull in the data-attributes
+    const API        = el.dataset.apiUrl;
+    const DETAIL_TPL = el.dataset.detailTmpl;
+    const CHANGE_TPL = el.dataset.changeTmpl;
+    const CREATE_URL = el.dataset.createUrl;
+    const EXPORT_URL = el.dataset.exportUrl;
+    const OWNER_TPL  = el.dataset.ownerUpdateTmpl;
+    const OU_TPL     = el.dataset.orgunitUpdateTmpl;
+    const USER_AC    = el.dataset.userAutocompleteUrl;
+    const OU_AC      = el.dataset.orgunitAutocompleteUrl;
+
+    // simple helper to replace the placeholder "0" in e.g. ".../0/" with a real id
+    function makeUrl(tmpl, id) {
+      return tmpl.replace(/\/0\//, `/${id}/`);
+    }
+
+    const userEditor    = makeAutocompleteEditor(USER_AC);
+    const orgunitEditor = makeAutocompleteEditor(OU_AC);
+
+    onMounted(() => {
+      el.innerHTML = `
+<div class="container-fluid mt-2">
+  <div class="d-flex justify-content-between mb-3">
+    <h4>Planning Data</h4>
+    <div class="btn-toolbar">
+      <input id="grid-search" class="form-control me-2" placeholder="Search…" style="max-width:200px">
+      <button id="btn-add" class="btn btn-primary me-2">
+        <i class="bi bi-plus-lg"></i> Add
+      </button>
+      <button id="btn-export" class="btn btn-secondary">
+        <i class="bi bi-download"></i> Export
+      </button>
+    </div>
+  </div>
+  <div id="grid-table" style="height:60vh;"></div>
+</div>`;
+
+      const table = new Tabulator("#grid-table", {
+        layout: "fitDataStretch",
+        ajaxURL: API,
+        ajaxConfig: { credentials: "include" },
+        pagination: "remote",
+        paginationSize: 20,
+        paginationDataSent: { page: "page", size: "page_size" },
+        paginationDataReceived: { last_page: "last_page" },
+        ajaxResponse: (url, params, res) => ({
+          data: res.results,
+          last_page: Math.ceil(res.count / params.size)
+        }),
+        columns: [
+          { title: "#", formatter: "rownum", width: 50 },
+          {
+            title: "Org Unit",
+            field: "org_unit",
+            formatter: cell => cell.getValue()?.display || ""
+          },
+          {
+            title: "Service",
+            field: "service",
+            formatter: cell => cell.getValue()?.display || ""
+          },
+          { title: "Key Figure", field: "key_figure" },
+          {
+            title: "Value",
+            field: "value",
+            editor: "input",
+            cellEdited: cell => {
+              const d = cell.getRow().getData();
+              axios
+                .patch(
+                  makeUrl(CHANGE_TPL, d.id),
+                  { [cell.getField()]: cell.getValue() },
+                  {
+                    withCredentials: true,
+                    headers: { "X-CSRFToken": csrftoken }
+                  }
+                )
+                .catch(() => cell.restoreOldValue());
+            }
+          }
+        ]
+      });
+
+      // wire up search
+      document
+        .getElementById("grid-search")
+        .addEventListener("input", e => {
+          table.setFilter("service", "like", e.target.value);
+          table.setPage(1);
+        });
+
+      // "Add" goes straight to your create-URL
+      document
+        .getElementById("btn-add")
+        .addEventListener("click", () => (window.location = CREATE_URL));
+
+      // Export CSV
+      document
+        .getElementById("btn-export")
+        .addEventListener("click", () =>
+          table.download("csv", "planning_export.csv")
+        );
+    });
+  }
+}).mount("#tabulator-app");
+</script>

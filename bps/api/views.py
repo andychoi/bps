@@ -2,7 +2,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
-from bps.models import PlanningFact, Version
+from bps.models.models import PlanningFact, Version
 from .serializers import PlanningFactPivotRowSerializer
 from .utils import pivot_facts_grouped
 

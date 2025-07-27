@@ -51,7 +51,7 @@ def get_org_units(org_unit_id=None, filter_kwargs=None, annotate_kwargs=None):
     Returns:
         tuple: (root_nodes, all_nodes_dict, selected_org_unit)
     """
-    from .models import OrgUnit
+    from .models.models import OrgUnit
     # Prepare the queryset with optional annotations and filters
     queryset = OrgUnit.objects.all()
     if annotate_kwargs:

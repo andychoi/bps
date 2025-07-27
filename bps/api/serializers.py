@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from bps.models import PlanningFact, Period
+from bps.models.models import PlanningFact, Period
 
 class PlanningFactSerializer(serializers.ModelSerializer):
     org_unit   = serializers.SerializerMethodField()

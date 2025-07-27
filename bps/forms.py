@@ -4,7 +4,7 @@ from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit
 from dal_select2.widgets import ModelSelect2
 from django.contrib.contenttypes.models import ContentType
-from .models import (
+from .models.models import (
     Constant, SubFormula, Formula, PlanningFunction, ReferenceData,
     PlanningLayoutYear, PeriodGrouping, PlanningSession,
     DataRequest, PlanningFact, Year, Version, OrgUnit

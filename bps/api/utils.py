@@ -1,6 +1,6 @@
 # api/utils.py
 from collections import defaultdict, OrderedDict
-from bps.models import Period
+from bps.models.models import Period
 
 def pivot_facts_grouped(facts, use_ref_value=False):
     """

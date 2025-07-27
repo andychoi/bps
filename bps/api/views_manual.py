@@ -6,7 +6,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from decimal import Decimal
-from bps.models import PlanningLayoutYear, PlanningFact, PlanningLayoutDimension, Version
+from bps.models.models import PlanningLayoutYear, PlanningFact, PlanningLayoutDimension, Version
 from .serializers import PlanningFactSerializer, PlanningFactPivotRowSerializer
 from .utils import pivot_facts_grouped
 
