@@ -16,7 +16,7 @@ from django.views.generic.edit import FormMixin
 from django.forms import modelform_factory
 
 from .models.models import (
-    PlanningSession, PlanningStage, PlanningLayoutYear,
+    PlanningScenario, PlanningSession, PlanningStage, PlanningLayoutYear,
     PlanningLayout, Year, Version, Period,
     PlanningFact, DataRequest, Constant, SubFormula,
     Formula, PlanningFunction, ReferenceData
@@ -30,7 +30,22 @@ from .formula_executor import FormulaExecutor
 
 
 # ── Dashboard & Basic Pages ────────────────────────────────────────────────
+class ScenarioDashboardView(TemplateView):
+    template_name = "bps/scenario_dashboard.html"
 
+    def get_context_data(self, **kwargs):
+        scenario = get_object_or_404(PlanningScenario, code=kwargs['code'])
+        sessions = PlanningSession.objects.filter(
+            layout_year=scenario.layout_year,
+            org_unit__in=scenario.org_units.all()
+        ).select_related('org_unit','current_stage')
+        return {
+            'scenario': scenario,
+            'sessions': sessions,
+            'stages': scenario.stages.all(),
+            'org_units': scenario.org_units.all(),
+        }
+    
 class DashboardView(TemplateView):
     template_name = 'bps/dashboard.html'
 

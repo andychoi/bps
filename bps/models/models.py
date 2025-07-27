@@ -11,6 +11,11 @@ from decimal import Decimal
 from treebeard.mp_tree import MP_Node
 # from django.contrib.postgres.fields import JSONField
 
+class TimestampModel(models.Model):
+    created_by  = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL, null=True, blank=True)
+    created_at  = models.DateTimeField(auto_now_add=True)
+    class Meta: abstract = True
+
 # ── 0. Cross Models ─────────────────────────────────
 
 class UnitOfMeasure(models.Model):
@@ -144,11 +149,12 @@ from .models_workflow import *
 
 # ── 5. Fact & EAV (as before) ───────────────────────────────────────────────
 
-class DataRequest(models.Model):
+class DataRequest(TimestampModel):
     ACTION_CHOICES = [
         ('DELTA',     'Delta'),
         ('OVERWRITE', 'Overwrite'),
         ('RESET',     'Reset to zero'),
+        ('SUMMARY','Final summary'),     # ← new
     ]    
     id          = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     session     = models.ForeignKey(PlanningSession, on_delete=models.CASCADE,
@@ -157,11 +163,12 @@ class DataRequest(models.Model):
     action_type = models.CharField(max_length=20,choices=ACTION_CHOICES,default='DELTA',
         help_text="Delta: add on top of existing; Overwrite: replace; Reset: zero-out then write",
     )    
-    created_by  = models.ForeignKey(settings.AUTH_USER_MODEL,
-                                    on_delete=models.SET_NULL, null=True, blank=True)
-    created_at  = models.DateTimeField(auto_now_add=True)
+    is_summary  = models.BooleanField(default=False,help_text="True if this request holds the final, rolled-up facts")    
 
-    def __str__(self): return f"{self.session} – {self.description or self.id}"
+    # … store all current fact values → dict on create
+    # before_snapshot = models.JSONField()
+
+    def __str__(self): return f"{self.session} - {self.description or self.id}"
 
 
 class PlanningFact(models.Model):
@@ -182,9 +189,7 @@ class PlanningFact(models.Model):
     account   = models.ForeignKey(Account, null=True, blank=True, on_delete=models.PROTECT)
 
     # Optional domain-specific dimensions
-    dimension_values = models.JSONField(default=dict, 
-        help_text="Mapping of extra dimension name → selected dimension key: e.g. {'Position':123, 'SkillGroup':'Developer'}"
-    )
+    dimension_values = models.JSONField(default=dict, help_text="Mapping of extra dimension name → selected dimension key: e.g. {'Position':123, 'SkillGroup':'Developer'}")
 
     # Key figure
     # key_figure  = models.CharField(max_length=100)  
@@ -225,10 +230,10 @@ class PlanningFactDimension(models.Model):
     value_id   = models.PositiveIntegerField(help_text="PK of the chosen dimension value")
 
 
-class DataRequestLog(models.Model):
+class DataRequestLog(TimestampModel):
     """A log of every change made to a planning fact."""
     # The batch or transaction this change belongs to
-    request     = models.ForeignKey(DataRequest, on_delete=models.PROTECT, related_name='log_entries')
+    request     = models.ForeignKey(DataRequest, on_delete=models.CASCADE, related_name='log_entries')
     
     # A link to the specific fact record that was changed
     fact        = models.ForeignKey(PlanningFact, on_delete=models.CASCADE)
@@ -237,10 +242,6 @@ class DataRequestLog(models.Model):
     old_value   = models.DecimalField(max_digits=18, decimal_places=2)
     new_value   = models.DecimalField(max_digits=18, decimal_places=2)
     
-    # Metadata for the log entry
-    changed_at  = models.DateTimeField(auto_now_add=True)
-    changed_by  = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
-
     def __str__(self):
         return f"{self.fact}: {self.old_value} → {self.new_value}"
 

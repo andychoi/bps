@@ -29,12 +29,55 @@ class PlanningStage(models.Model):
     def __str__(self):
         return f"{self.order}: {self.name}"
 
+class PlanningScenario(models.Model):
+    """
+    A self-contained planning “bucket”:
+      • links to one Layout+Year+Version,
+      • defines an ordered set of OrgUnits,
+      • sequences PlanningStages and PlanningFunctions.
+    - Single scenario fetch: 
+        scenario = PlanningScenario.objects.select_related('layout_year__layout')\
+                    .prefetch_related('stages','functions','org_units')[…]
+    
+    """
+    code        = models.CharField(max_length=50, unique=True)
+    name        = models.CharField(max_length=200)
+    layout_year = models.ForeignKey(PlanningLayoutYear, on_delete=models.CASCADE)
+    org_units   = models.ManyToManyField(OrgUnit, through='ScenarioOrgUnit')
+    stages      = models.ManyToManyField(PlanningStage, through='ScenarioStage')
+    functions   = models.ManyToManyField('bps.PlanningFunction', through='ScenarioFunction')
+    is_active   = models.BooleanField(default=True)
+    created_at  = models.DateTimeField(auto_now_add=True)
+
+class ScenarioOrgUnit(models.Model):
+    scenario   = models.ForeignKey(PlanningScenario, on_delete=models.CASCADE)
+    org_unit   = models.ForeignKey(OrgUnit, on_delete=models.CASCADE)
+    order      = models.PositiveSmallIntegerField()
+    class Meta:
+        unique_together = ('scenario','org_unit')
+        ordering = ['order']
+
+class ScenarioStage(models.Model):
+    scenario = models.ForeignKey(PlanningScenario, on_delete=models.CASCADE)
+    stage    = models.ForeignKey(PlanningStage, on_delete=models.CASCADE)
+    order    = models.PositiveSmallIntegerField()
+    class Meta:
+        unique_together = ('scenario','stage')
+        ordering = ['order']
+
+class ScenarioFunction(models.Model):
+    scenario  = models.ForeignKey(PlanningScenario, on_delete=models.CASCADE)
+    function  = models.ForeignKey('bps.PlanningFunction', on_delete=models.CASCADE)
+    order     = models.PositiveSmallIntegerField()
+    class Meta:
+        unique_together = ('scenario','function')
+        ordering = ['order']
+        
 class PlanningSession(models.Model):
     """
     One OrgUnit’s planning for one layout‐year.
     """
-    layout_year = models.ForeignKey(PlanningLayoutYear, on_delete=models.CASCADE,
-                                    related_name='sessions')
+    scenario      = models.ForeignKey(PlanningScenario, on_delete=models.CASCADE, related_name='sessions')
     org_unit    = models.ForeignKey(OrgUnit, on_delete=models.CASCADE,
                                     help_text="Owner of this session")
     created_by  = models.ForeignKey(settings.AUTH_USER_MODEL,
@@ -65,7 +108,7 @@ class PlanningSession(models.Model):
     current_stage = models.ForeignKey(PlanningStage, on_delete=models.PROTECT, null=True, blank=True)
 
     class Meta:
-        unique_together = ('layout_year','org_unit')
+        unique_together = ('scenario','org_unit')
     def __str__(self):
         return f"{self.org_unit.name} - {self.layout_year}"
 

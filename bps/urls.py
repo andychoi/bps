@@ -26,8 +26,6 @@ router.register(r'facts',    PlanningFactViewSet, basename='facts')
 router.register(r'orgunits', OrgUnitViewSet,    basename='orgunits')
 urlpatterns = [
     path('', include(router.urls)),
-    # --- API URLs (DRF) ---
-    path("api/", include("bps.api.urls")),
 ]
 
 
