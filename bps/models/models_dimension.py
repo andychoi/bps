@@ -54,7 +54,7 @@ class CBU(InfoObject):
     group       = models.CharField(max_length=50, blank=True)  # e.g. industry vertical
     TIER_CHOICES = [('1','Tier-1'),('2','Tier-2'),('3','Tier-3')]
     tier        = models.CharField(max_length=1, choices=TIER_CHOICES)
-    sla_profile = models.ForeignKey('SLAProfile', on_delete=models.SET_NULL, null=True, blank=True)
+
     region      = models.CharField(max_length=50, blank=True)
     is_active   = models.BooleanField(default=True)
 
@@ -72,20 +72,8 @@ class Service(InfoObject):
     category         = models.CharField(max_length=50)    # e.g. Platform, Security
     subcategory      = models.CharField(max_length=50)    # e.g. Directory Services
     related_services = models.ManyToManyField('self', blank=True)
-    CRITICALITY_CHOICES = [('H','High'),('M','Medium'),('L','Low')]
-    criticality      = models.CharField(max_length=1, choices=CRITICALITY_CHOICES)
-    sla_response     = models.DurationField(help_text="e.g. PT2H for 2 hours")
-    sla_resolution   = models.DurationField(help_text="e.g. PT4H for 4 hours")
-    availability     = models.DecimalField(max_digits=5, decimal_places=3,
-                                           help_text="e.g. 99.900")
-    SUPPORT_HOUR_CHOICES = [
-        ('24x7','24x7'),
-        ('9x5','9x5 Mon-Fri'),
-        ('custom','Custom')
-    ]
-    support_hours    = models.CharField(max_length=10,choices=SUPPORT_HOUR_CHOICES)
+
     orgunit      = models.ForeignKey('OrgUnit',on_delete=models.SET_NULL,null=True, blank=True)
-    owner            = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL,null=True, blank=True)
     is_active        = models.BooleanField(default=True)
 
     class Meta:
