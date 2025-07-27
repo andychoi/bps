@@ -59,16 +59,7 @@ class UserMaster(models.Model):
     def __str__(self):
         return self.user.get_full_name() or self.user.username
     
-class SLAProfile(models.Model):
-    name           = models.CharField(max_length=50, unique=True)
-    response_time  = models.DurationField()
-    resolution_time= models.DurationField()
-    availability   = models.DecimalField(max_digits=5, decimal_places=3)
-    description    = models.TextField(blank=True)
 
-    def __str__(self):
-        return self.name
-    
 class KeyFigure(models.Model):
     """ “PlanAmount”, “ActualQuantity”, “FTE”, “Utilization%”, etc.
     """
