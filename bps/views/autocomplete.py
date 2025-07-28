@@ -5,7 +5,7 @@ from dal_select2.widgets import ModelSelect2, ModelSelect2Multiple
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import Q
 
-from .models.models import (
+from ..models.models import (
     PlanningLayout,
     Year,
     Period,

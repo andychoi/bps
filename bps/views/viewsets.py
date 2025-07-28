@@ -6,8 +6,8 @@ from django.http import HttpResponse
 import csv
 
 from bps.models.models import PlanningFact, OrgUnit
-from .serializers import PlanningFactSerializer, PlanningFactCreateUpdateSerializer
-from .serializers import OrgUnitSerializer
+from ..serializers import PlanningFactSerializer, PlanningFactCreateUpdateSerializer
+from ..serializers import OrgUnitSerializer
 
 class PlanningFactViewSet(viewsets.ModelViewSet):
     """

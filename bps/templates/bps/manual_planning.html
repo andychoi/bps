@@ -1,46 +1,84 @@
-{# bps/manual_planning.html #}
-{% extends 'bps/base.html' %}
+{# templates/bps/manual_planning.html #}
+{% extends "bps/base.html" %}
 {% load static %}
+{% block title %}Manual Planning – {{ layout_year.layout.name }}{% endblock %}
+
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h2>Manual Planning: {{ layout_year.layout.name }} | {{ layout_year.year.code }} / {{ layout_year.version.code }}</h2>
+  <h2>
+    Manual Planning:
+    {{ sess.current_step.stage.name }} &mdash;
+    Layout {{ sess.current_step.layout.code }}
+  </h2>
   <div>
-    <button class="btn btn-success" onclick="saveGrid()">Save</button>
+    <button class="btn btn-success me-2" onclick="saveGrid()">Save</button>
     <button class="btn btn-secondary" onclick="revertGrid()">Revert</button>
   </div>
 </div>
+
 <div id="planning-grid"></div>
 {% endblock %}
-{% block extra_js %}
-<link href="https://unpkg.com/tabulator-tables@6.3.0/dist/css/tabulator.min.css" rel="stylesheet">
-<script src="https://unpkg.com/tabulator-tables@6.3.0/dist/js/tabulator.min.js"></script>
-<script>
-const layout = {{ layout_year.id }};
-const year   = {{ layout_year.year.id }};
-const version= "{{ layout_year.version.code }}";
-let changed = [];
 
-const table = new Tabulator('#planning-grid', {
-  layout: 'fitDataStretch',
-  ajaxURL: `/api/planning-grid/?layout=${layout}&year=${year}&version=${version}`,
-  ajaxResponse: (url, _, data) => data,
-  columns: [{ title:'Cost Center', field:'cost_center', frozen:true, headerFilter:'input' },
-            { title:'Service', field:'service', frozen:true },
-            { title:'Key Figure', field:'key_figure' },
-    {% for p in periods %}
-    { title:'{{ p.name }}', field:'M{{ p.code }}', editor:'number', bottomCalc:'sum' },
-    {% endfor %}
-  ],
-  cellEdited: (cell) => changed.push({id:cell.getData().id,field:cell.getField(),value:cell.getValue()}),
-});
-function saveGrid() {
-  if (!changed.length) return alert('No changes');
-  fetch('/api/planning-grid/', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json','X-CSRFToken':'{{ csrf_token }}'},
-    body: JSON.stringify({layout,updates:changed})
-  }).then(r=>r.ok?location.reload():alert('Save failed'));
-}
-function revertGrid() { changed=[]; table.replaceData(); }
+{% block extra_js %}
+<script src="https://unpkg.com/tabulator-tables@6.3.0/dist/js/tabulator.min.js"></script>
+<link href="https://unpkg.com/tabulator-tables@6.3.0/dist/css/tabulator.min.css" rel="stylesheet">
+
+<script>
+  // Pull session & step from Django context
+  const SESSION_ID = {{ sess.pk }};
+  const STEP_ID    = {{ sess.current_step.pk }};
+
+  let changes = [];
+
+  // Initialize Tabulator
+  const table = new Tabulator("#planning-grid", {
+    layout: "fitDataStretch",
+    ajaxURL: `/api/manual-planning/${SESSION_ID}/${STEP_ID}/`,
+    ajaxResponse: (_,__,data) => data,
+    columns: [
+      { title: "Org Unit", field: "org_unit_name", frozen: true },
+      { title: "Service",  field: "service_code" },
+      { title: "Key Figure", field: "key_figure_code" },
+      {% for bucket in sess.current_step.layout_year.period_groupings.first.buckets %}
+      { title: "{{ bucket.code }}",
+        field: "M{{ bucket.code }}",
+        editor: "number",
+        bottomCalc: "sum"
+      },
+      {% endfor %}
+    ],
+    cellEdited: (cell) => {
+      changes.push({
+        id:    cell.getRow().getData().id,
+        field: cell.getField(),
+        value: cell.getValue()
+      });
+    }
+  });
+
+  function saveGrid() {
+    if (!changes.length) {
+      return alert("No changes to save.");
+    }
+    fetch(`/api/manual-planning/${SESSION_ID}/${STEP_ID}/`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken":  "{{ csrf_token }}"
+      },
+      body: JSON.stringify({ updates: changes })
+    }).then(resp => {
+      if (resp.ok) {
+        location.reload();
+      } else {
+        alert("Save failed.");
+      }
+    });
+  }
+
+  function revertGrid() {
+    changes = [];
+    table.replaceData();
+  }
 </script>
 {% endblock %}

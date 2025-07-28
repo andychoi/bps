@@ -193,7 +193,8 @@ class PlanningFact(models.Model):
     class Meta:
         unique_together = ('version', 'year', 'period', 'org_unit', 'service', 'account', 'key_figure', 'dimension_values')
         indexes = [
-            models.Index(fields=['year', 'version', 'org_unit']),
+            models.Index(fields=['session','period']),
+            models.Index(fields=['session','org_unit','period']),
             models.Index(fields=['key_figure']),
         ]
     def __str__(self):
@@ -214,6 +215,8 @@ class PlanningFact(models.Model):
         ).factor
         return round(self.value * rate, 2)
 
+# ── 6. Pivoted Planning Fact View ───────────────────────────────────────────
+from .models_view import *  
 
 class PlanningFactDimension(models.Model):
     fact       = models.ForeignKey(PlanningFact, on_delete=models.CASCADE, related_name="fact_dimensions")
@@ -506,8 +509,7 @@ class FormulaRun(models.Model):
     run_by    = models.ForeignKey(settings.AUTH_USER_MODEL,
                                   null=True, on_delete=models.SET_NULL)
 
-    def __str__(self):
-        return f"Run #{self.pk} of {self.formula.name} @ {self.run_at}"
+    def __str__(self): return f"Run #{self.pk} of {self.formula.name} @ {self.run_at}"
 
 
 class FormulaRunEntry(models.Model):
@@ -520,7 +522,6 @@ class FormulaRunEntry(models.Model):
     old_value  = models.DecimalField(max_digits=18, decimal_places=6)
     new_value  = models.DecimalField(max_digits=18, decimal_places=6)
 
-    def __str__(self):
-        return f"{self.record} :: {self.key}: {self.old_value} → {self.new_value}"
+    def __str__(self): return f"{self.record} :: {self.key}: {self.old_value} → {self.new_value}"
     
         

@@ -1,19 +1,3 @@
-
-# Columnar model
-
- views and templates will align cleanly with:
-	•	PlanningScenario → M2M → ScenarioStep
-	•	ScenarioStep → PlanningStage + PlanningLayout
-	•	PlanningSession → FK → ScenarioStep
-    
-## Migration 
-
-```
-python manage.py makemigrations --empty bps
-```
-
-
-```
 # bps/migrations/0002_create_pivoted_planningfact_view.py
 from django.db import migrations
 
@@ -79,4 +63,3 @@ class Migration(migrations.Migration):
             reverse_sql="DROP VIEW IF EXISTS pivoted_planningfact;"
         )
     ]
-```

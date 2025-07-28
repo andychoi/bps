@@ -13,6 +13,10 @@ from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from decimal import Decimal
 from treebeard.mp_tree import MP_Node
+class TimestampModel(models.Model):
+    created_by  = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL, null=True, blank=True)
+    created_at  = models.DateTimeField(auto_now_add=True)
+    class Meta: abstract = True
 class UnitOfMeasure(models.Model):
     code        = models.CharField(max_length=10, unique=True)
     name        = models.CharField(max_length=50)
@@ -36,14 +40,6 @@ class UserMaster(models.Model):
     cost_center = models.ForeignKey(CostCenter, on_delete=models.SET_NULL, null=True)
     def __str__(self):
         return self.user.get_full_name() or self.user.username
-class SLAProfile(models.Model):
-    name           = models.CharField(max_length=50, unique=True)
-    response_time  = models.DurationField()
-    resolution_time= models.DurationField()
-    availability   = models.DecimalField(max_digits=5, decimal_places=3)
-    description    = models.TextField(blank=True)
-    def __str__(self):
-        return self.name
 class KeyFigure(models.Model):
     code = models.CharField(max_length=100, unique=True)
     name = models.CharField(max_length=200)
@@ -76,11 +72,12 @@ class PeriodGrouping(models.Model):
             buckets.append({'code':code, 'name':code, 'periods':group})
         return buckets
 from .models_workflow import *
-class DataRequest(models.Model):
+class DataRequest(TimestampModel):
     ACTION_CHOICES = [
         ('DELTA',     'Delta'),
         ('OVERWRITE', 'Overwrite'),
         ('RESET',     'Reset to zero'),
+        ('SUMMARY','Final summary'),
     ]
     id          = models.UUIDField(primary_key=True, default=uuid4, editable=False)
     session     = models.ForeignKey(PlanningSession, on_delete=models.CASCADE,
@@ -89,10 +86,8 @@ class DataRequest(models.Model):
     action_type = models.CharField(max_length=20,choices=ACTION_CHOICES,default='DELTA',
         help_text="Delta: add on top of existing; Overwrite: replace; Reset: zero-out then write",
     )
-    created_by  = models.ForeignKey(settings.AUTH_USER_MODEL,
-                                    on_delete=models.SET_NULL, null=True, blank=True)
-    created_at  = models.DateTimeField(auto_now_add=True)
-    def __str__(self): return f"{self.session} – {self.description or self.id}"
+    is_summary  = models.BooleanField(default=False,help_text="True if this request holds the final, rolled-up facts")
+    def __str__(self): return f"{self.session} - {self.description or self.id}"
 class PlanningFact(models.Model):
     request     = models.ForeignKey(DataRequest, on_delete=models.PROTECT)
     session     = models.ForeignKey(PlanningSession, on_delete=models.CASCADE)
@@ -102,9 +97,7 @@ class PlanningFact(models.Model):
     org_unit    = models.ForeignKey(OrgUnit, on_delete=models.PROTECT)
     service   = models.ForeignKey(Service, null=True, blank=True, on_delete=models.PROTECT)
     account   = models.ForeignKey(Account, null=True, blank=True, on_delete=models.PROTECT)
-    dimension_values = models.JSONField(default=dict,
-        help_text="Mapping of extra dimension name → selected dimension key: e.g. {'Position':123, 'SkillGroup':'Developer'}"
-    )
+    dimension_values = models.JSONField(default=dict, help_text="Mapping of extra dimension name → selected dimension key: e.g. {'Position':123, 'SkillGroup':'Developer'}")
     key_figure  = models.ForeignKey(KeyFigure, on_delete=models.PROTECT)
     value       = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     uom         = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name='+', null=True)
@@ -113,7 +106,8 @@ class PlanningFact(models.Model):
     class Meta:
         unique_together = ('version', 'year', 'period', 'org_unit', 'service', 'account', 'key_figure', 'dimension_values')
         indexes = [
-            models.Index(fields=['year', 'version', 'org_unit']),
+            models.Index(fields=['session','period']),
+            models.Index(fields=['session','org_unit','period']),
             models.Index(fields=['key_figure']),
         ]
     def __str__(self):
@@ -129,17 +123,16 @@ class PlanningFact(models.Model):
             to_uom=to_uom
         ).factor
         return round(self.value * rate, 2)
+from .models_view import *
 class PlanningFactDimension(models.Model):
     fact       = models.ForeignKey(PlanningFact, on_delete=models.CASCADE, related_name="fact_dimensions")
     dimension  = models.ForeignKey(PlanningLayoutDimension, on_delete=models.PROTECT)
     value_id   = models.PositiveIntegerField(help_text="PK of the chosen dimension value")
-class DataRequestLog(models.Model):
-    request     = models.ForeignKey(DataRequest, on_delete=models.PROTECT, related_name='log_entries')
+class DataRequestLog(TimestampModel):
+    request     = models.ForeignKey(DataRequest, on_delete=models.CASCADE, related_name='log_entries')
     fact        = models.ForeignKey(PlanningFact, on_delete=models.CASCADE)
     old_value   = models.DecimalField(max_digits=18, decimal_places=2)
     new_value   = models.DecimalField(max_digits=18, decimal_places=2)
-    changed_at  = models.DateTimeField(auto_now_add=True)
-    changed_by  = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
     def __str__(self):
         return f"{self.fact}: {self.old_value} → {self.new_value}"
 class PlanningFunction(models.Model):
@@ -306,16 +299,14 @@ class FormulaRun(models.Model):
     preview   = models.BooleanField(default=False)
     run_by    = models.ForeignKey(settings.AUTH_USER_MODEL,
                                   null=True, on_delete=models.SET_NULL)
-    def __str__(self):
-        return f"Run
+    def __str__(self): return f"Run
 class FormulaRunEntry(models.Model):
     run        = models.ForeignKey(FormulaRun, related_name='entries', on_delete=models.CASCADE)
     record     = models.ForeignKey('PlanningFact', on_delete=models.CASCADE)
     key        = models.CharField(max_length=100)
     old_value  = models.DecimalField(max_digits=18, decimal_places=6)
     new_value  = models.DecimalField(max_digits=18, decimal_places=6)
-    def __str__(self):
-        return f"{self.record} :: {self.key}: {self.old_value} → {self.new_value}"
+    def __str__(self): return f"{self.record} :: {self.key}: {self.old_value} → {self.new_value}"
 ```
 
 ### `models_dimension.py`
@@ -357,7 +348,6 @@ class CBU(InfoObject):
     group       = models.CharField(max_length=50, blank=True)
     TIER_CHOICES = [('1','Tier-1'),('2','Tier-2'),('3','Tier-3')]
     tier        = models.CharField(max_length=1, choices=TIER_CHOICES)
-    sla_profile = models.ForeignKey('SLAProfile', on_delete=models.SET_NULL, null=True, blank=True)
     region      = models.CharField(max_length=50, blank=True)
     is_active   = models.BooleanField(default=True)
     node_order_by = ['group', 'code']
@@ -369,20 +359,7 @@ class Service(InfoObject):
     category         = models.CharField(max_length=50)
     subcategory      = models.CharField(max_length=50)
     related_services = models.ManyToManyField('self', blank=True)
-    CRITICALITY_CHOICES = [('H','High'),('M','Medium'),('L','Low')]
-    criticality      = models.CharField(max_length=1, choices=CRITICALITY_CHOICES)
-    sla_response     = models.DurationField(help_text="e.g. PT2H for 2 hours")
-    sla_resolution   = models.DurationField(help_text="e.g. PT4H for 4 hours")
-    availability     = models.DecimalField(max_digits=5, decimal_places=3,
-                                           help_text="e.g. 99.900")
-    SUPPORT_HOUR_CHOICES = [
-        ('24x7','24x7'),
-        ('9x5','9x5 Mon-Fri'),
-        ('custom','Custom')
-    ]
-    support_hours    = models.CharField(max_length=10,choices=SUPPORT_HOUR_CHOICES)
     orgunit      = models.ForeignKey('OrgUnit',on_delete=models.SET_NULL,null=True, blank=True)
-    owner            = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL,null=True, blank=True)
     is_active        = models.BooleanField(default=True)
     class Meta:
         ordering = ['category','subcategory','code']
@@ -540,11 +517,52 @@ class Position(InfoObject):
         return f"[{self.year.code}] {self.code} ({self.skill}/{self.level}) - {status}"
 ```
 
+### `models_view.py`
+```python
+from django.db import models
+class PivotedPlanningFact(models.Model):
+    version = models.CharField(max_length=50)
+    year = models.IntegerField()
+    org_unit = models.CharField(max_length=50)
+    service = models.CharField(max_length=50)
+    account = models.CharField(max_length=50)
+    key_figure = models.CharField(max_length=50)
+    v01 = models.FloatField(null=True, blank=True)
+    v02 = models.FloatField(null=True, blank=True)
+    v03 = models.FloatField(null=True, blank=True)
+    v04 = models.FloatField(null=True, blank=True)
+    v05 = models.FloatField(null=True, blank=True)
+    v06 = models.FloatField(null=True, blank=True)
+    v07 = models.FloatField(null=True, blank=True)
+    v08 = models.FloatField(null=True, blank=True)
+    v09 = models.FloatField(null=True, blank=True)
+    v10 = models.FloatField(null=True, blank=True)
+    v11 = models.FloatField(null=True, blank=True)
+    v12 = models.FloatField(null=True, blank=True)
+    r01 = models.FloatField(null=True, blank=True)
+    r02 = models.FloatField(null=True, blank=True)
+    r03 = models.FloatField(null=True, blank=True)
+    r04 = models.FloatField(null=True, blank=True)
+    r05 = models.FloatField(null=True, blank=True)
+    r06 = models.FloatField(null=True, blank=True)
+    r07 = models.FloatField(null=True, blank=True)
+    r08 = models.FloatField(null=True, blank=True)
+    r09 = models.FloatField(null=True, blank=True)
+    r10 = models.FloatField(null=True, blank=True)
+    r11 = models.FloatField(null=True, blank=True)
+    r12 = models.FloatField(null=True, blank=True)
+    total_value = models.FloatField(null=True, blank=True)
+    total_reference = models.FloatField(null=True, blank=True)
+    class Meta:
+        managed = False
+        db_table = 'pivoted_planningfact'
+```
+
 ### `models_workflow.py`
 ```python
 from django.db import models, transaction
 from django.conf import settings
-from .models_layout import PlanningLayoutYear
+from .models_layout import PlanningLayoutYear, PlanningLayout
 from .models_dimension import OrgUnit
 class PlanningStage(models.Model):
     code       = models.CharField(max_length=20, unique=True)
@@ -558,9 +576,46 @@ class PlanningStage(models.Model):
         ordering = ['order']
     def __str__(self):
         return f"{self.order}: {self.name}"
+class PlanningScenario(models.Model):
+    code        = models.CharField(max_length=50, unique=True)
+    name        = models.CharField(max_length=200)
+    layout_year = models.ForeignKey(PlanningLayoutYear, on_delete=models.CASCADE)
+    org_units   = models.ManyToManyField(OrgUnit, through='ScenarioOrgUnit')
+    stages      = models.ManyToManyField(PlanningStage, through='ScenarioStage')
+    functions   = models.ManyToManyField('bps.PlanningFunction', through='ScenarioFunction')
+    is_active   = models.BooleanField(default=True)
+    created_at  = models.DateTimeField(auto_now_add=True)
+class ScenarioOrgUnit(models.Model):
+    scenario   = models.ForeignKey(PlanningScenario, on_delete=models.CASCADE)
+    org_unit   = models.ForeignKey(OrgUnit, on_delete=models.CASCADE)
+    order      = models.PositiveSmallIntegerField()
+    class Meta:
+        unique_together = ('scenario','org_unit')
+        ordering = ['order']
+class ScenarioStage(models.Model):
+    scenario = models.ForeignKey(PlanningScenario, on_delete=models.CASCADE)
+    stage    = models.ForeignKey(PlanningStage, on_delete=models.CASCADE)
+    order    = models.PositiveSmallIntegerField()
+    class Meta:
+        unique_together = ('scenario','stage')
+        ordering = ['order']
+class ScenarioStep(models.Model):
+    scenario    = models.ForeignKey(PlanningScenario, on_delete=models.CASCADE)
+    stage       = models.ForeignKey(PlanningStage, on_delete=models.CASCADE)
+    layout      = models.ForeignKey(PlanningLayout, on_delete=models.PROTECT)
+    order       = models.PositiveSmallIntegerField()
+    class Meta:
+        unique_together = ('scenario','stage', 'layout')
+        ordering = ['order']
+class ScenarioFunction(models.Model):
+    scenario  = models.ForeignKey(PlanningScenario, on_delete=models.CASCADE)
+    function  = models.ForeignKey('bps.PlanningFunction', on_delete=models.CASCADE)
+    order     = models.PositiveSmallIntegerField()
+    class Meta:
+        unique_together = ('scenario','function')
+        ordering = ['order']
 class PlanningSession(models.Model):
-    layout_year = models.ForeignKey(PlanningLayoutYear, on_delete=models.CASCADE,
-                                    related_name='sessions')
+    scenario      = models.ForeignKey(PlanningScenario, on_delete=models.CASCADE, related_name='sessions')
     org_unit    = models.ForeignKey(OrgUnit, on_delete=models.CASCADE,
                                     help_text="Owner of this session")
     created_by  = models.ForeignKey(settings.AUTH_USER_MODEL,
@@ -580,9 +635,9 @@ class PlanningSession(models.Model):
                                     null=True, blank=True,
                                     related_name='+')
     frozen_at   = models.DateTimeField(null=True, blank=True)
-    current_stage = models.ForeignKey(PlanningStage, on_delete=models.PROTECT, null=True, blank=True)
+    current_step = models.ForeignKey(ScenarioStep, on_delete=models.PROTECT)
     class Meta:
-        unique_together = ('layout_year','org_unit')
+        unique_together = ('scenario','org_unit')
     def __str__(self):
         return f"{self.org_unit.name} - {self.layout_year}"
     def can_edit(self, user):

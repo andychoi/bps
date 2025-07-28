@@ -1,6 +1,6 @@
 from django.db import models, transaction
 from django.conf import settings
-from .models_layout import PlanningLayoutYear
+from .models_layout import PlanningLayoutYear, PlanningLayout
 from .models_dimension import OrgUnit
 
 class PlanningStage(models.Model):
@@ -65,6 +65,16 @@ class ScenarioStage(models.Model):
         unique_together = ('scenario','stage')
         ordering = ['order']
 
+class ScenarioStep(models.Model):
+    scenario    = models.ForeignKey(PlanningScenario, on_delete=models.CASCADE)
+    stage       = models.ForeignKey(PlanningStage, on_delete=models.CASCADE)
+    layout      = models.ForeignKey(PlanningLayout, on_delete=models.PROTECT)
+    order       = models.PositiveSmallIntegerField()
+
+    class Meta:
+        unique_together = ('scenario','stage', 'layout')
+        ordering = ['order']
+
 class ScenarioFunction(models.Model):
     scenario  = models.ForeignKey(PlanningScenario, on_delete=models.CASCADE)
     function  = models.ForeignKey('bps.PlanningFunction', on_delete=models.CASCADE)
@@ -105,7 +115,8 @@ class PlanningSession(models.Model):
     if not session.current_stage.can_run_in_parallel and session.current_stage.order != MY_STEP_ORDER:
         raise PermissionDenied("Cannot do manual planning until stage 3 is reached.")
     """
-    current_stage = models.ForeignKey(PlanningStage, on_delete=models.PROTECT, null=True, blank=True)
+    # current_stage = models.ForeignKey(PlanningStage, on_delete=models.PROTECT, null=True, blank=True)
+    current_step = models.ForeignKey(ScenarioStep, on_delete=models.PROTECT)
 
     class Meta:
         unique_together = ('scenario','org_unit')

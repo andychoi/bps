@@ -4,7 +4,7 @@ from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit
 from dal_select2.widgets import ModelSelect2
 from django.contrib.contenttypes.models import ContentType
-from .models.models import (
+from ..models.models import (
     Constant, SubFormula, Formula, PlanningFunction, ReferenceData,
     PlanningLayoutYear, PeriodGrouping, PlanningSession,
     DataRequest, PlanningFact, Year, Version, OrgUnit
@@ -149,17 +149,19 @@ class ReferenceDataForm(forms.ModelForm):
 class PlanningSessionForm(forms.ModelForm):
     class Meta:
         model = PlanningSession
-        fields = ['layout_year','org_unit']
+        fields = ['org_unit']
         widgets = {
-           'layout_year': ModelSelect2(url='bps:layoutyear-autocomplete'),
+        #    'layout_year': ModelSelect2(url='bps:layoutyear-autocomplete'),
            'org_unit'   : ModelSelect2(url='bps:orgunit-autocomplete'),
         }
     def __init__(self,*a,**kw):
         super().__init__(*a,**kw)
         self.helper = FormHelper(self)
         self.helper.layout = Layout(
-          Row(Column('layout_year', css_class='col-md-6'),
-              Column('org_unit',    css_class='col-md-6')),
+          Row(
+            #   Column('layout_year', css_class='col-md-6'),
+              Column('org_unit',    css_class='col-md-6')
+        ),
           Submit('start','Start Planning')
         )
 

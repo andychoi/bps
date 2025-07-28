@@ -1,6 +1,7 @@
-# urls.py
+# bps/urls.py
 from django.urls import path, include
-from .views import (
+from .views.views import (
+    ScenarioDashboardView, PlanningSessionListView, PlanningSessionDetailView, AdvanceStepView, 
     DashboardView, ProfileView, InboxView, NotificationsView,
     ManualPlanningSelectView, ManualPlanningView,
     PlanningSessionListView, PlanningSessionDetailView, AdvanceStageView,
@@ -10,7 +11,8 @@ from .views import (
     ReferenceDataListView, DataRequestListView, DataRequestDetailView,
     FactListView, VariableListView,
 )
-from .autocomplete import (
+
+from .views.autocomplete import (
     LayoutAutocomplete, ContentTypeAutocomplete,
     YearAutocomplete, PeriodAutocomplete,
     OrgUnitAutocomplete, CBUAutocomplete,
@@ -18,20 +20,16 @@ from .autocomplete import (
     UnitOfMeasureAutocomplete, LayoutYearAutocomplete,
 )
 
-# viewset and router imports
-from rest_framework.routers import DefaultRouter
-from .viewsets import PlanningFactViewSet, OrgUnitViewSet
-router = DefaultRouter()
-router.register(r'facts',    PlanningFactViewSet, basename='facts')
-router.register(r'orgunits', OrgUnitViewSet,    basename='orgunits')
-urlpatterns = [
-    path('', include(router.urls)),
-]
-
-
 app_name = "bps"
 
-urlpatterns += [
+urlpatterns = [
+    path("api/", include("bps.api.urls")),   # ← now this works, no self-loop
+    
+    path("scenario/<slug:code>/", ScenarioDashboardView.as_view(), name="scenario_dashboard"),
+    path("session/", PlanningSessionListView.as_view(), name="session_list"),
+    path("session/<int:pk>/", PlanningSessionDetailView.as_view(), name="session_detail"),
+    path("session/<int:pk>/advance/", AdvanceStepView.as_view(), name="advance_step"),
+
     # Dashboard & basics
     path("",                 DashboardView.as_view(),    name="dashboard"),
     path("profile/",         ProfileView.as_view(),      name="profile"),

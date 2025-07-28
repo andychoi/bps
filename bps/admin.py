@@ -1,54 +1,71 @@
 # bps/admin.py
+
 from django.contrib import admin
-from django.contrib.contenttypes.admin import GenericTabularInline
+
 from .models.models import (
     UnitOfMeasure, ConversionRate,
     Constant, SubFormula, Formula, FormulaRun, FormulaRunEntry,
-    PlanningFunction, ReferenceData, Position, RateCard, 
-    Year, Version, OrgUnit, Account, Service, CBU, CostCenter, InternalOrder,
-    SLAProfile, KeyFigure, DataRequestLog, 
-    PlanningLayout, PlanningDimension, PlanningKeyFigure, PlanningLayoutYear,
+    PlanningFunction, ReferenceData,
+    KeyFigure, DataRequest, DataRequestLog, PlanningFact,
+    PlanningSession, PlanningStage,
+    PlanningLayout, PlanningLayoutYear, PlanningDimension, PlanningKeyFigure,
     Period, PeriodGrouping,
-    PlanningSession, DataRequest, PlanningFact, 
-    PlanningStage, Skill, Resource
+)
+from .models.models_dimension import (
+    Year, Version, OrgUnit, Account, Service, CBU, CostCenter, InternalOrder
+)
+from .models.models_resource import Skill, Resource
+from .models.models_workflow import (
+    PlanningScenario, ScenarioStep, ScenarioStage, ScenarioFunction, ScenarioOrgUnit
 )
 
+
 # ── Units of Measure & Conversion Rates ────────────────────────────────────
+
 @admin.register(UnitOfMeasure)
 class UnitOfMeasureAdmin(admin.ModelAdmin):
-    list_display = ('code', 'name', 'is_base')
-    search_fields = ('code', 'name')
+    list_display   = ('code', 'name', 'is_base')
+    search_fields  = ('code', 'name')
+
 
 @admin.register(ConversionRate)
 class ConversionRateAdmin(admin.ModelAdmin):
-    list_display = ('from_uom', 'to_uom', 'factor')
-    list_filter  = ('from_uom', 'to_uom')
+    list_display  = ('from_uom', 'to_uom', 'factor')
+    list_filter   = ('from_uom', 'to_uom')
 
 
 # ── Constants & Formulas ───────────────────────────────────────────────────
+
 @admin.register(Constant)
 class ConstantAdmin(admin.ModelAdmin):
-    list_display  = ('name', 'value')
-    search_fields = ('name',)
+    list_display   = ('name', 'value')
+    search_fields  = ('name',)
+
 
 @admin.register(SubFormula)
 class SubFormulaAdmin(admin.ModelAdmin):
-    list_display  = ('name', 'layout')
-    search_fields = ('name', 'layout__code')
-    list_filter   = ('layout',)
+    list_display   = ('name', 'layout')
+    search_fields  = ('name', 'layout__code')
+    list_filter    = ('layout',)
+
 
 @admin.register(Formula)
 class FormulaAdmin(admin.ModelAdmin):
-    list_display  = ('name', 'layout')
-    search_fields = ('name', 'layout__code')
-    list_filter   = ('layout',)
+    list_display   = ('name', 'layout')
+    search_fields  = ('name', 'layout__code')
+    list_filter    = ('layout',)
+
 
 # ── Formula Runs & Entries ────────────────────────────────────────────────
+
 class FormulaRunEntryInline(admin.TabularInline):
-    model = FormulaRunEntry
-    extra = 0
-    fields = ('record', 'key', 'old_value', 'new_value')
-    readonly_fields = fields
+    model            = FormulaRunEntry
+    extra            = 0
+    fields           = ('record', 'key', 'old_value', 'new_value')
+    readonly_fields  = fields
+    can_delete       = False
+    show_change_link = True
+
 
 @admin.register(FormulaRun)
 class FormulaRunAdmin(admin.ModelAdmin):
@@ -58,95 +75,160 @@ class FormulaRunAdmin(admin.ModelAdmin):
     inlines         = [FormulaRunEntryInline]
     ordering        = ('-run_at',)
 
+
 # ── PlanningFunction & ReferenceData ──────────────────────────────────────
+
 @admin.register(PlanningFunction)
 class PlanningFunctionAdmin(admin.ModelAdmin):
-    list_display  = ('name', 'layout', 'function_type')
-    list_filter   = ('function_type', 'layout')
-    search_fields = ('name',)
+    list_display   = ('name', 'layout', 'function_type')
+    list_filter    = ('function_type', 'layout')
+    search_fields  = ('name',)
+
 
 @admin.register(ReferenceData)
 class ReferenceDataAdmin(admin.ModelAdmin):
-    list_display  = ('name', 'source_year', 'source_version')
-    search_fields = ('name',)
+    list_display   = ('name', 'source_year', 'source_version')
+    search_fields  = ('name',)
+
+
+# ── Scenario Models ───────────────────────────────────────────────────────
+
+@admin.register(PlanningScenario)
+class PlanningScenarioAdmin(admin.ModelAdmin):
+    list_display   = ('code', 'name', 'layout_year', 'is_active', 'created_at')
+    list_filter    = ('is_active', 'layout_year__layout', 'layout_year__year', 'layout_year__version')
+    search_fields  = ('code', 'name')
+    ordering       = ('code',)
+
+
+@admin.register(ScenarioStage)
+class ScenarioStageAdmin(admin.ModelAdmin):
+    list_display   = ('scenario', 'stage', 'order')
+    list_filter    = ('scenario', 'stage')
+    ordering       = ('scenario', 'order')
+
+
+@admin.register(ScenarioStep)
+class ScenarioStepAdmin(admin.ModelAdmin):
+    list_display   = ('scenario', 'stage', 'layout', 'order')
+    list_filter    = ('scenario', 'stage', 'layout')
+    ordering       = ('scenario', 'order')
+
+
+@admin.register(ScenarioFunction)
+class ScenarioFunctionAdmin(admin.ModelAdmin):
+    list_display   = ('scenario', 'function', 'order')
+    list_filter    = ('scenario', 'function')
+    ordering       = ('scenario', 'order')
+
+
+@admin.register(ScenarioOrgUnit)
+class ScenarioOrgUnitAdmin(admin.ModelAdmin):
+    list_display   = ('scenario', 'org_unit', 'order')
+    list_filter    = ('scenario', 'org_unit')
+    ordering       = ('scenario', 'order')
+
 
 # ── InfoObject‐derived Dimensions ───────────────────────────────────────────
+
 class InfoObjectAdmin(admin.ModelAdmin):
-    list_display   = ('code', 'name', 'order')
-    search_fields  = ('code', 'name')
-    ordering       = ('order', 'code')
+    list_display  = ('code', 'name', 'order')
+    search_fields = ('code', 'name')
+    ordering      = ('order', 'code')
 
-admin.site.register([Year, Version, OrgUnit, Account, Service, CBU, CostCenter, InternalOrder], InfoObjectAdmin)
+admin.site.register(
+    [Year, Version, OrgUnit, Account, Service, CBU, CostCenter, InternalOrder],
+    InfoObjectAdmin
+)
 
-# Register Skill & Resource
+
+# ── Skill & Resource ──────────────────────────────────────────────────────
+
 @admin.register(Skill)
 class SkillAdmin(admin.ModelAdmin):
-    list_display = ('name',)
+    list_display  = ('name',)
     search_fields = ('name',)
+
 
 @admin.register(Resource)
 class ResourceAdmin(admin.ModelAdmin):
-    list_display = ('unique_id','display_name','resource_type','current_skill','current_level')
-    list_filter = ('resource_type','current_skill','current_level')
-    search_fields = ('unique_id','display_name')
+    list_display   = ('unique_id', 'display_name', 'resource_type', 'current_skill', 'current_level')
+    list_filter    = ('resource_type', 'current_skill', 'current_level')
+    search_fields  = ('unique_id', 'display_name')
 
 
-@admin.register(SLAProfile)
-class SLAProfileAdmin(admin.ModelAdmin):
-    list_display = ('name', 'response_time', 'resolution_time', 'availability')
-    search_fields = ('name',)
+# ── Key Figures ────────────────────────────────────────────────────────────
 
 @admin.register(KeyFigure)
 class KeyFigureAdmin(admin.ModelAdmin):
-    list_display = ('code', 'name', 'is_percent')
-    search_fields = ('code', 'name')
+    list_display   = ('code', 'name', 'is_percent')
+    search_fields  = ('code', 'name')
+
 
 # ── Planning Layout & Dimensions ───────────────────────────────────────────
+
 class PlanningDimensionInline(admin.TabularInline):
     model = PlanningDimension
     extra = 1
+
 
 class PlanningKeyFigureInline(admin.TabularInline):
     model = PlanningKeyFigure
     extra = 1
 
+
 class LayoutYearInline(admin.TabularInline):
-    model = PlanningLayoutYear
-    extra = 1
+    model  = PlanningLayoutYear
+    extra  = 1
     fields = ('year', 'version')
+
 
 @admin.register(PlanningLayout)
 class PlanningLayoutAdmin(admin.ModelAdmin):
     list_display = ('code', 'name', 'domain', 'default')
     inlines      = [PlanningDimensionInline, PlanningKeyFigureInline, LayoutYearInline]
 
+
 @admin.register(PlanningLayoutYear)
 class PlanningLayoutYearAdmin(admin.ModelAdmin):
-    list_display       = ('layout', 'year', 'version')
-    filter_horizontal  = ('org_units', 'row_dims')
-    search_fields      = ('layout__code',)
-    list_filter        = ('layout', 'year', 'version')
+    list_display      = ('layout', 'year', 'version')
+    filter_horizontal = ('org_units', 'row_dims')
+    search_fields     = ('layout__code',)
+    list_filter       = ('layout', 'year', 'version')
+
 
 # ── Period & Grouping ──────────────────────────────────────────────────────
+
 @admin.register(Period)
 class PeriodAdmin(admin.ModelAdmin):
-    list_display  = ('code', 'name', 'order')
-    ordering      = ('order',)
-    search_fields = ('code', 'name')
+    list_display   = ('code', 'name', 'order')
+    ordering       = ('order',)
+    search_fields  = ('code', 'name')
+
 
 @admin.register(PeriodGrouping)
 class PeriodGroupingAdmin(admin.ModelAdmin):
-    list_display = ('layout_year', 'months_per_bucket', 'label_prefix')
-    list_filter  = ('months_per_bucket', 'layout_year')
-    search_fields = ('layout_year__layout__code',)
+    list_display   = ('layout_year', 'months_per_bucket', 'label_prefix')
+    list_filter    = ('months_per_bucket', 'layout_year')
+    search_fields  = ('layout_year__layout__code',)
+
 
 # ── Planning Workflow & Sessions ───────────────────────────────────────────
+
+@admin.register(PlanningStage)
+class PlanningStageAdmin(admin.ModelAdmin):
+    list_display       = ('order', 'code', 'name', 'can_run_in_parallel')
+    list_display_links = ('code',)
+    list_editable      = ('order', 'name', 'can_run_in_parallel')
+    ordering           = ('order',)
+
+
 @admin.register(PlanningSession)
 class PlanningSessionAdmin(admin.ModelAdmin):
-    list_display   = ('org_unit', 'layout_year', 'status', 'created_at')
-    list_filter    = ('status', 'layout_year')
-    search_fields  = ('org_unit__name',)
-    actions        = ['make_completed', 'make_frozen']
+    list_display   = ('org_unit', 'scenario', 'status', 'created_at')
+    list_filter    = ('status', 'scenario')
+    search_fields  = ('org_unit__name', 'scenario__code')
+    actions        = ('make_completed', 'make_frozen')
 
     def make_completed(self, request, queryset):
         for session in queryset:
@@ -158,76 +240,45 @@ class PlanningSessionAdmin(admin.ModelAdmin):
             session.freeze(request.user)
     make_frozen.short_description = "Mark selected sessions as Frozen"
 
+
 # ── DataRequest & Facts Inline ────────────────────────────────────────────
+
 class FactInline(admin.TabularInline):
-    model = PlanningFact
-    extra = 0
-    readonly_fields = (
-        'request','session','version','year','period','org_unit',
-        'service','account','dimension_values',
-        'key_figure','value','uom','ref_value','ref_uom'
+    model              = PlanningFact
+    extra              = 0
+    readonly_fields    = (
+        'request', 'session', 'version', 'year', 'period', 'org_unit',
+        'service', 'account', 'key_figure', 'value', 'uom', 'ref_value', 'ref_uom'
     )
-    fields = readonly_fields
-    can_delete = False
-    show_change_link = True
+    fields             = readonly_fields
+    can_delete         = False
+    show_change_link   = True
     verbose_name_plural = "Planning Facts"
 
+
 class DataRequestLogInline(admin.TabularInline):
-    model = DataRequestLog
-    extra = 0
-    readonly_fields = ('fact','old_value','new_value','changed_at','changed_by')
-    fields = readonly_fields
-    can_delete = False
-    show_change_link = True
+    model              = DataRequestLog
+    extra              = 0
+    readonly_fields    = ('fact', 'old_value', 'new_value', 'created_at', 'created_by')
+    fields             = readonly_fields
+    can_delete         = False
+    show_change_link   = True
     verbose_name_plural = "Change Log"
+
 
 @admin.register(DataRequest)
 class DataRequestAdmin(admin.ModelAdmin):
-    list_display  = ('id','session','description','created_at')
-    inlines       = [DataRequestLogInline]
+    list_display  = ('id', 'session', 'description', 'action_type', 'is_summary', 'created_at')
+    list_filter   = ('action_type', 'is_summary')
+    inlines       = [FactInline, DataRequestLogInline]
+    search_fields = ('description',)
+
 
 @admin.register(PlanningFact)
 class PlanningFactAdmin(admin.ModelAdmin):
-    list_display  = (
-        'session','version','year','period','org_unit',
-        'service','account','key_figure','value','uom','ref_value','ref_uom'
+    list_display   = (
+        'session', 'version', 'year', 'period', 'org_unit',
+        'service', 'account', 'key_figure', 'value', 'uom', 'ref_value', 'ref_uom'
     )
-    list_filter   = ('year','period','uom','service','account','key_figure')
-    search_fields = ('dimension_values',)
-    readonly_fields = ()
-
-
-@admin.register(Position)
-class PositionAdmin(admin.ModelAdmin):
-    list_display = ('year', 'code', 'name', 'skill', 'level', 'orgunit', 'fte', 'is_open', 'intended_resource_type', 'filled_by_resource')
-    list_filter = ('year', 'skill', 'level', 'is_open', 'intended_resource_type')
-    search_fields = ('code', 'name', 'skill__name', 'level')
-    ordering = ('year__code', 'skill', 'level', 'code')
-    fieldsets = (
-        (None, {
-            'fields': (
-                'year', 'code', 'name', 'skill', 'level', 'orgunit',
-                'fte', 'is_open', 'intended_resource_type', 'filled_by_resource'
-            )
-        }),
-    )
-
-
-@admin.register(RateCard)
-class RateCardAdmin(admin.ModelAdmin):
-    list_display = ('skill', 'level', 'resource_type', 'country', 'efficiency_factor')
-    list_filter = ('skill', 'level', 'resource_type', 'country')
-    search_fields = ('skill__name', 'country', 'resource_type')
-    ordering = ('skill', 'level', 'resource_type', 'country')
-    fieldsets = (
-        (None, {
-            'fields': ('skill', 'level', 'resource_type', 'country', 'efficiency_factor')
-        }),
-    )
-
-@admin.register(PlanningStage)
-class PlanningStageAdmin(admin.ModelAdmin):
-    list_display       = ('order','code','name','can_run_in_parallel')
-    list_display_links = ('code',)
-    list_editable      = ('order','name','can_run_in_parallel')
-    ordering           = ('order',)
+    list_filter    = ('year', 'period', 'uom', 'service', 'account', 'key_figure')
+    search_fields  = ('key_figure__code', 'org_unit__name')
