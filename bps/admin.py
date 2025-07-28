@@ -9,7 +9,7 @@ from .models.models import (
     KeyFigure, DataRequest, DataRequestLog, PlanningFact,
     PlanningSession, PlanningStage,
     PlanningLayout, PlanningLayoutYear, PlanningDimension, PlanningKeyFigure,
-    Period, PeriodGrouping,
+    Period, PeriodGrouping, RateCard, Position
 )
 from .models.models_dimension import (
     Year, Version, OrgUnit, Account, Service, CBU, CostCenter, InternalOrder
@@ -282,3 +282,23 @@ class PlanningFactAdmin(admin.ModelAdmin):
     )
     list_filter    = ('year', 'period', 'uom', 'service', 'account', 'key_figure')
     search_fields  = ('key_figure__code', 'org_unit__name')
+
+@admin.register(RateCard)
+class RateCardAdmin(admin.ModelAdmin):
+    list_display = (
+        'year',
+        'skill',
+        'level',
+        'resource_type',
+        'country',
+        'hourly_rate',
+        'efficiency_factor',
+    )
+    list_filter = ('year','resource_type','country')
+    search_fields = ('skill__name','level')
+
+@admin.register(Position)
+class PositionAdmin(admin.ModelAdmin):
+    list_display = ('year','code','skill','level','fte','is_open')
+    list_filter  = ('year','level','is_open')
+    search_fields = ('code','skill__name')    

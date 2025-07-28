@@ -1,3 +1,6 @@
+# Python Project Summary: views
+
+---
 
 ### `autocomplete.py`
 ```python
@@ -5,7 +8,7 @@ from dal_select2.views import Select2QuerySetView
 from dal_select2.widgets import ModelSelect2, ModelSelect2Multiple
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import Q
-from .models.models import (
+from ..models.models import (
     PlanningLayout,
     Year,
     Period,
@@ -116,7 +119,7 @@ from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit
 from dal_select2.widgets import ModelSelect2
 from django.contrib.contenttypes.models import ContentType
-from .models.models import (
+from ..models.models import (
     Constant, SubFormula, Formula, PlanningFunction, ReferenceData,
     PlanningLayoutYear, PeriodGrouping, PlanningSession,
     DataRequest, PlanningFact, Year, Version, OrgUnit
@@ -520,7 +523,7 @@ from django.views.generic import (
 )
 from django.views.generic.edit import FormMixin
 from django.forms import modelform_factory
-from .models.models import (
+from ..models.models import (
     PlanningScenario, PlanningSession, PlanningStage, PlanningLayoutYear,
     PlanningLayout, Year, Version, Period,
     PlanningFact, DataRequest, Constant, SubFormula,
@@ -535,16 +538,15 @@ from .formula_executor import FormulaExecutor
 class ScenarioDashboardView(TemplateView):
     template_name = "bps/scenario_dashboard.html"
     def get_context_data(self, **kwargs):
-        scenario = get_object_or_404(PlanningScenario, code=kwargs['code'])
+        scenario = get_object_or_404(PlanningScenario, code=kwargs["code"])
         sessions = PlanningSession.objects.filter(
-            layout_year=scenario.layout_year,
-            org_unit__in=scenario.org_units.all()
-        ).select_related('org_unit','current_stage')
+            scenario=scenario
+        ).select_related("org_unit", "current_step__stage", "current_step__layout")
         return {
-            'scenario': scenario,
-            'sessions': sessions,
-            'stages': scenario.stages.all(),
-            'org_units': scenario.org_units.all(),
+            "scenario":   scenario,
+            "sessions":   sessions,
+            "steps":      scenario.steps.order_by("orderscenario__order"),
+            "org_units":  scenario.org_units.all(),
         }
 class DashboardView(TemplateView):
     template_name = 'bps/dashboard.html'
@@ -562,7 +564,6 @@ class DashboardView(TemplateView):
                 year__code=selected_year
             ).select_related('layout', 'version'),
             'incomplete_sessions': PlanningSession.objects.filter(
-                layout_year__year__code=selected_year,
                 status=PlanningSession.Status.DRAFT
             ).select_related('org_unit', 'layout_year').order_by('org_unit__name'),
             'planning_funcs': [
@@ -636,55 +637,73 @@ class PlanningSessionListView(ListView):
     context_object_name = 'sessions'
     ordering = ['-created_at']
     paginate_by = 50
-class PlanningSessionDetailView(DetailView, FormMixin):
+class PlanningSessionDetailView(FormMixin, DetailView):
     model = PlanningSession
-    template_name = 'bps/session_detail.html'
-    context_object_name = 'sess'
-    pk_url_kwarg = 'pk'
+    template_name = "bps/session_detail.html"
+    context_object_name = "sess"
     form_class = PlanningSessionForm
     def get_form_kwargs(self):
         kwargs = super().get_form_kwargs()
-        kwargs['instance'] = self.get_object()
+        kwargs["instance"] = self.get_object()
         return kwargs
-    def get_context_data(self, **kwargs):
-        ctx = super().get_context_data(**kwargs)
+    def get_context_data(self, **ctx):
         sess = self.object
-        user = self.request.user
-        ctx['can_edit']   = sess.can_edit(user)
-        ctx['form']       = self.get_form()
-        ctx['period_form'] = PeriodSelector(session=sess)
-        grouping_id = self.request.session.get('grouping_id')
-        if grouping_id:
-            grouping = get_object_or_404(PeriodGrouping, pk=grouping_id)
-            ctx['periods'] = grouping.buckets()
-        else:
-            ctx['periods'] = []
-        ctx['dr']    = sess.requests.order_by('-created_at').first()
-        facts        = PlanningFact.objects.filter(session=sess)
-        hot_rows     = [
-            [str(f.period), f.key_figure.code, float(f.value)]
-            for f in facts
-        ]
-        ctx['hot_data'] = json.dumps(hot_rows)
-        ctx['can_advance'] = bool(sess.current_stage and user.is_staff)
+        ctx = super().get_context_data(**ctx)
+        step   = sess.current_step
+        stage  = step.stage
+        layout = step.layout
+        period_form = PeriodSelector(session=sess)
+        dr = sess.requests.order_by('-created_at').first()
+        facts = sess.planningfact_set.filter(request=dr) if dr else []
+        ctx.update({
+            "can_edit":     sess.can_edit(self.request.user),
+            "form":         self.get_form(),
+            "period_form":  period_form,
+            "current_step": step,
+            "stage":        stage,
+            "layout":       layout,
+            "dr":           dr,
+            "facts":        facts,
+            "breadcrumbs": [
+                {"url": reverse("bps:dashboard"),      "title": "Dashboard"},
+                {"url": reverse("bps:session_list"),   "title": "Sessions"},
+                {"url": self.request.path,             "title": f"{sess.org_unit.name}"},
+            ],
+            "can_advance":  self.request.user.is_staff and bool(
+                                sess.current_step and
+                                sess.scenario.steps.filter(order__gt=step.order).exists()
+                            ),
+        })
         return ctx
     def post(self, request, *args, **kwargs):
         self.object = self.get_object()
         sess = self.object
-        if 'start' in request.POST:
+        if "start" in request.POST:
             form = PlanningSessionForm(request.POST, instance=sess)
             if form.is_valid():
                 sess = form.save(commit=False)
                 sess.created_by = request.user
                 sess.save()
-                messages.success(request, "Session started")
-                return redirect('bps:session_detail', pk=sess.pk)
-        if 'apply' in request.POST:
+                messages.success(request, "Session started.")
+                return redirect("bps:session_detail", pk=sess.pk)
+        if "apply" in request.POST:
             ps = PeriodSelector(request.POST, session=sess)
             if ps.is_valid():
-                request.session['grouping_id'] = ps.cleaned_data['grouping'].pk
-                return redirect('bps:session_detail', pk=sess.pk)
+                request.session["grouping_id"] = ps.cleaned_data["grouping"].pk
+                return redirect("bps:session_detail", pk=sess.pk)
         return self.get(request, *args, **kwargs)
+class AdvanceStepView(View):
+    def post(self, request, session_id):
+        sess = get_object_or_404(PlanningSession, pk=session_id)
+        current_order = sess.current_step.order
+        next_step = sess.scenario.steps.filter(order__gt=current_order).order_by("order").first()
+        if not next_step:
+            messages.warning(request, "Already at final step.")
+        else:
+            sess.current_step = next_step
+            sess.save(update_fields=["current_step"])
+            messages.success(request, f"Advanced to step: {next_step.stage.name}")
+        return redirect("bps:session_detail", pk=session_id)
 class AdvanceStageView(View):
     def get(self, request, session_id):
         sess = get_object_or_404(PlanningSession, pk=session_id)
@@ -877,8 +896,8 @@ from rest_framework.response import Response
 from django.http import HttpResponse
 import csv
 from bps.models.models import PlanningFact, OrgUnit
-from .serializers import PlanningFactSerializer, PlanningFactCreateUpdateSerializer
-from .serializers import OrgUnitSerializer
+from ..serializers import PlanningFactSerializer, PlanningFactCreateUpdateSerializer
+from ..serializers import OrgUnitSerializer
 class PlanningFactViewSet(viewsets.ModelViewSet):
     queryset = PlanningFact.objects.select_related(
         'org_unit','service','period','key_figure'

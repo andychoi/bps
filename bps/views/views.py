@@ -63,11 +63,18 @@ class DashboardView(TemplateView):
             'selected_year': selected_year,
             'layouts': PlanningLayoutYear.objects.filter(
                 year__code=selected_year
-            ).select_related('layout', 'version'),
+            ).select_related('layout','version'),
             'incomplete_sessions': PlanningSession.objects.filter(
-                layout_year__year__code=selected_year,
                 status=PlanningSession.Status.DRAFT
-            ).select_related('org_unit', 'layout_year').order_by('org_unit__name'),
+            )
+            # join the FK to scenario, then its FK to layout_year,
+            # plus the org_unit itself
+            .select_related(
+               'org_unit',
+               'scenario__layout_year__layout',
+               'scenario__layout_year__version'
+            )
+            .order_by('org_unit__name'),
             'planning_funcs': [
                 {'name': 'Inbox', 'url': reverse('bps:inbox')},
                 {'name': 'Notifications', 'url': reverse('bps:notifications')},

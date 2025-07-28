@@ -1,5 +1,7 @@
 {# templates/bps/session_detail.html #}
 {% extends "bps/base.html" %}
+{% load crispy_forms_tags %} 
+
 {% block content %}
   <h1>{{ sess.org_unit.name }} — {{ sess.scenario.name }}</h1>
   <p>
@@ -41,11 +43,11 @@
     </tbody>
   </table>
 
-  <form method="post" action="{% url 'bps:advance_step' session_id=sess.pk %}">
-    {% csrf_token %}
-    <button class="btn btn-sm btn-primary" 
-            {% if not user.is_staff %}disabled{% endif %}>
-      Next Step →
-    </button>
-  </form>
+<form method="post" action="{% url 'bps:advance_step' sess.pk %}">
+  {% csrf_token %}
+  <button class="btn btn-sm btn-primary"
+          {% if not user.is_staff %}disabled{% endif %}>
+    Next Step →
+  </button>
+</form>
 {% endblock %}

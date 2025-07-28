@@ -1,3 +1,5 @@
+# Python Project Summary: templates
+
 ---
 
 ### `bps/_action_reset.html`
@@ -616,49 +618,80 @@ createApp({
 
 ### `bps/manual_planning.html`
 ```html
-{# bps/manual_planning.html #}
-{% extends 'bps/base.html' %}
+{# templates/bps/manual_planning.html #}
+{% extends "bps/base.html" %}
 {% load static %}
+{% block title %}Manual Planning – {{ layout_year.layout.name }}{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h2>Manual Planning: {{ layout_year.layout.name }} | {{ layout_year.year.code }} / {{ layout_year.version.code }}</h2>
+  <h2>
+    Manual Planning:
+    {{ sess.current_step.stage.name }} &mdash;
+    Layout {{ sess.current_step.layout.code }}
+  </h2>
   <div>
-    <button class="btn btn-success" onclick="saveGrid()">Save</button>
+    <button class="btn btn-success me-2" onclick="saveGrid()">Save</button>
     <button class="btn btn-secondary" onclick="revertGrid()">Revert</button>
   </div>
 </div>
 <div id="planning-grid"></div>
 {% endblock %}
 {% block extra_js %}
-<link href="https://unpkg.com/tabulator-tables@6.3.0/dist/css/tabulator.min.css" rel="stylesheet">
 <script src="https://unpkg.com/tabulator-tables@6.3.0/dist/js/tabulator.min.js"></script>
+<link href="https://unpkg.com/tabulator-tables@6.3.0/dist/css/tabulator.min.css" rel="stylesheet">
 <script>
-const layout = {{ layout_year.id }};
-const year   = {{ layout_year.year.id }};
-const version= "{{ layout_year.version.code }}";
-let changed = [];
-const table = new Tabulator('#planning-grid', {
-  layout: 'fitDataStretch',
-  ajaxURL: `/api/planning-grid/?layout=${layout}&year=${year}&version=${version}`,
-  ajaxResponse: (url, _, data) => data,
-  columns: [{ title:'Cost Center', field:'cost_center', frozen:true, headerFilter:'input' },
-            { title:'Service', field:'service', frozen:true },
-            { title:'Key Figure', field:'key_figure' },
-    {% for p in periods %}
-    { title:'{{ p.name }}', field:'M{{ p.code }}', editor:'number', bottomCalc:'sum' },
-    {% endfor %}
-  ],
-  cellEdited: (cell) => changed.push({id:cell.getData().id,field:cell.getField(),value:cell.getValue()}),
-});
-function saveGrid() {
-  if (!changed.length) return alert('No changes');
-  fetch('/api/planning-grid/', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json','X-CSRFToken':'{{ csrf_token }}'},
-    body: JSON.stringify({layout,updates:changed})
-  }).then(r=>r.ok?location.reload():alert('Save failed'));
-}
-function revertGrid() { changed=[]; table.replaceData(); }
+  // Pull session & step from Django context
+  const SESSION_ID = {{ sess.pk }};
+  const STEP_ID    = {{ sess.current_step.pk }};
+  let changes = [];
+  // Initialize Tabulator
+  const table = new Tabulator("#planning-grid", {
+    layout: "fitDataStretch",
+    ajaxURL: `/api/manual-planning/${SESSION_ID}/${STEP_ID}/`,
+    ajaxResponse: (_,__,data) => data,
+    columns: [
+      { title: "Org Unit", field: "org_unit_name", frozen: true },
+      { title: "Service",  field: "service_code" },
+      { title: "Key Figure", field: "key_figure_code" },
+      {% for bucket in sess.current_step.layout_year.period_groupings.first.buckets %}
+      { title: "{{ bucket.code }}",
+        field: "M{{ bucket.code }}",
+        editor: "number",
+        bottomCalc: "sum"
+      },
+      {% endfor %}
+    ],
+    cellEdited: (cell) => {
+      changes.push({
+        id:    cell.getRow().getData().id,
+        field: cell.getField(),
+        value: cell.getValue()
+      });
+    }
+  });
+  function saveGrid() {
+    if (!changes.length) {
+      return alert("No changes to save.");
+    }
+    fetch(`/api/manual-planning/${SESSION_ID}/${STEP_ID}/`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken":  "{{ csrf_token }}"
+      },
+      body: JSON.stringify({ updates: changes })
+    }).then(resp => {
+      if (resp.ok) {
+        location.reload();
+      } else {
+        alert("Save failed.");
+      }
+    });
+  }
+  function revertGrid() {
+    changes = [];
+    table.replaceData();
+  }
 </script>
 {% endblock %}
 ```
@@ -787,95 +820,50 @@ function revertGrid() { changed=[]; table.replaceData(); }
 ```html
 {# templates/bps/session_detail.html #}
 {% extends "bps/base.html" %}
-{% load crispy_forms_tags %}
-{% block extra_head %}
-  {# needed only for your Period table below #}
-  <script src="https://unpkg.com/vue@3"></script>
-{% endblock %}
 {% block content %}
-  <h1>Planning: {{ sess.org_unit.name }} / {{ sess.layout_year }}</h1>
-  {# — Start Session — #}
+  <h1>{{ sess.org_unit.name }} — {{ sess.scenario.name }}</h1>
+  <p>
+    <strong>Step:</strong> {{ stage.name }}  
+    <small class="text-muted">using layout {{ layout.code }}</small>
+  </p>
   {% if can_edit %}
-    <form method="post" class="mb-3">{% csrf_token %}
+    <form method="post">{% csrf_token %}
       {{ form|crispy }}
+      <button name="start" class="btn btn-primary">Start Session</button>
     </form>
   {% endif %}
-  {# — Period Definition — #}
   <h2>Period Definition</h2>
-  <form method="post" class="mb-3">{% csrf_token %}
+  <form method="post">{% csrf_token %}
     {{ period_form|crispy }}
+    <button name="apply" class="btn btn-secondary">Apply</button>
   </form>
-  <div id="period-table">
-    <vue-period-table :buckets="{{ periods|safe }}" />
-  </div>
-    <h2>Raw Facts ({{ dr.description }})</h2>
-  <table class="table table-striped table-bordered">
+  <h2>Raw Facts</h2>
+  <table class="table table-striped">
     <thead>
       <tr>
-        <th>Version</th>
-        <th>Period</th>
-        <th>Org Unit</th>
-        <th>Service</th>
-        <th>Key Figure</th>
-        <th>Value</th>
-        <th>Ref. Value</th>
+        <th>Period</th><th>Key Figure</th><th>Value</th><th>UoM</th>
       </tr>
     </thead>
     <tbody>
-      {% for f in facts %}
+      {% for fact in sess.current_facts %}
       <tr>
-        <td>{{ f.version.code }}</td>
-        <td>{{ f.period.name }}</td>
-        <td>{{ f.org_unit.name }}</td>
-        <td>{% if f.service %}{{ f.service.name }}{% else %}&mdash;{% endif %}</td>
-        <td>{{ f.key_figure.code }}</td>
-        <td>{{ f.value }}</td>
-        <td>{{ f.ref_value }}</td>
+        <td>{{ fact.period.code }}</td>
+        <td>{{ fact.key_figure.code }}</td>
+        <td>{{ fact.value }}</td>
+        <td>{{ fact.uom.code }}</td>
       </tr>
       {% empty %}
-      <tr><td colspan="7" class="text-center">No facts found for this session.</td></tr>
+      <tr><td colspan="4">No facts yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>
-  {# — The Tabulator grid — #}
-  <h2>Current Facts ({{ dr.description }})</h2>
-  {% include "bps/_tabulator.html" with api_url=api_url detail_url=detail_url change_url=change_url create_url=create_url export_url=export_url owner_update_url=owner_update_url orgunit_update_url=orgunit_update_url user_ac_url=user_ac_url orgunit_ac_url=orgunit_ac_url %}
-  {# — Session actions — #}
-  {% if sess.status == sess.Status.DRAFT and request.user == sess.org_unit.head_user %}
-    <form method="post" class="mt-3">{% csrf_token %}
-      <button name="complete" class="btn btn-success">Mark Completed</button>
-    </form>
-  {% endif %}
-  {% if sess.status == sess.Status.COMPLETED and request.user.is_staff %}
-    <form method="post" class="mt-2">{% csrf_token %}
-      <button name="freeze" class="btn btn-danger">Freeze Session</button>
-    </form>
-  {% endif %}
-  {% if can_advance %}
-    <form
-      action="{% url 'bps:advance_stage' session_id=sess.pk %}"
-      method="post"
-      class="d-inline mt-2"
-    >{% csrf_token %}
-      <button class="btn btn-sm btn-primary">Next Step ➡️</button>
-    </form>
-  {% endif %}
-{% endblock %}
-{% block extra_js %}
-  <script>
-    // your Vue component for the period table
-    const app = Vue.createApp({});
-    app.component('vue-period-table', {
-      props: ['buckets'],
-      template: `
-        <table class="table table-bordered mb-4">
-          <thead>
-            <tr><th v-for="b in buckets">{{ b.name }}</th></tr>
-          </thead>
-        </table>`
-    });
-    app.mount('#period-table');
-  </script>
+  <form method="post" action="{% url 'bps:advance_step' session_id=sess.pk %}">
+    {% csrf_token %}
+    <button class="btn btn-sm btn-primary" 
+            {% if not user.is_staff %}disabled{% endif %}>
+      Next Step →
+    </button>
+  </form>
 {% endblock %}
 ```
 

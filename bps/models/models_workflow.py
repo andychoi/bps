@@ -123,6 +123,11 @@ class PlanningSession(models.Model):
     def __str__(self):
         return f"{self.org_unit.name} - {self.layout_year}"
 
+    @property
+    def layout_year(self):
+        # forward to the scenario's layout_year
+        return self.scenario.layout_year
+
     def can_edit(self, user):
         if self.status == self.Status.DRAFT and user == self.org_unit.head_user:
             return True
