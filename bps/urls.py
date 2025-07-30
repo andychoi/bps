@@ -23,6 +23,7 @@ from .views.autocomplete import (
 app_name = "bps"
 
 urlpatterns = [
+    
     path("api/", include("bps.api.urls")),   # ← now this works, no self-loop
     
     path("scenario/<slug:code>/", ScenarioDashboardView.as_view(), name="scenario_dashboard"),
@@ -90,6 +91,4 @@ urlpatterns = [
     path("autocomplete/uom/",         UnitOfMeasureAutocomplete.as_view(), name="uom-autocomplete"),
     path("autocomplete/layoutyear/",  LayoutYearAutocomplete.as_view(),   name="layoutyear-autocomplete"),
 
-    # API URLs (DRF)
-    path("api/", include("bps.api.urls")),
 ]
