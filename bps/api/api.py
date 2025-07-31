@@ -25,7 +25,7 @@ class PlanningGridView(APIView):
         ly_pk = request.query_params.get('layout')
         ly    = get_object_or_404(PlanningLayoutYear, pk=ly_pk)
 
-        facts = PlanningFact.objects.filter(session__layout_year=ly)
+        facts = PlanningFact.objects.filter(session__scenario__layout_year=ly)
         rows  = {}
         for f in facts:
             key = (f.org_unit.code, f.service.code if f.service else "")
@@ -78,7 +78,7 @@ class PlanningGridBulkUpdateView(APIView):
                 kf  = KeyFigure.objects.get(code=upd["key_figure"])
 
                 fact = PlanningFact.objects.get(
-                    session__layout_year=ly,
+                    session__scenario__layout_year=ly,
                     org_unit=org, service=svc,
                     period=per, key_figure=kf
                 )

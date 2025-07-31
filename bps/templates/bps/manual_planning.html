@@ -4,81 +4,131 @@
 {% block title %}Manual Planning – {{ layout_year.layout.name }}{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h2>
-    Manual Planning:
-    {{ sess.current_step.stage.name }} &mdash;
-    Layout {{ sess.current_step.layout.code }}
-  </h2>
-  <div>
-    <button class="btn btn-success me-2" onclick="saveGrid()">Save</button>
-    <button class="btn btn-secondary" onclick="revertGrid()">Revert</button>
+<div class="container-fluid mt-3">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h2>
+      Manual Planning – {{ layout_year.layout.name }}
+      ({{ layout_year.year.code }}/{{ layout_year.version.code }})
+    </h2>
+    <button class="btn btn-primary" id="btn-save">Save Changes</button>
   </div>
-</div>
 
-<div id="planning-grid"></div>
+  <div class="row mb-2">
+    {% for drv in drivers %}
+      <div class="col-auto">
+        <label class="form-label">{{ drv.label }}</label>
+        <select class="form-select driver-filter" data-key="{{ drv.key }}">
+          <option value="">All {{ drv.label }}</option>
+          {% for opt in drv.choices %}
+            <option value="{{ opt.id }}">{{ opt.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    {% endfor %}
+  </div>
+
+  <div id="planning-grid"></div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
-<script src="https://unpkg.com/tabulator-tables@6.3.0/dist/js/tabulator.min.js"></script>
-<link href="https://unpkg.com/tabulator-tables@6.3.0/dist/css/tabulator.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3/dist/js/tabulator.min.js"></script>
+<link href="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3/dist/css/tabulator.min.css" rel="stylesheet"/>
 
 <script>
-  // Pull session & step from Django context
-  const SESSION_ID = {{ sess.pk }};
-  const STEP_ID    = {{ sess.current_step.pk }};
+  (function(){
+    const apiURL    = "{{ api_url }}";
+    const updateURL = "{{ update_url }}";
+    const layoutId  = {{ layout_year.pk }};
+    const buckets   = {{ buckets_js|safe }};    // list of {code,name,periods}
+    const kfCodes   = {{ kf_codes|safe }};   // e.g. ["HC","COST",…]
 
-  let changes = [];
-
-  // Initialize Tabulator
-  const table = new Tabulator("#planning-grid", {
-    layout: "fitDataStretch",
-    ajaxURL: `/api/manual-planning/${SESSION_ID}/${STEP_ID}/`,
-    ajaxResponse: (_,__,data) => data,
-    columns: [
-      { title: "Org Unit", field: "org_unit_name", frozen: true },
-      { title: "Service",  field: "service_code" },
-      { title: "Key Figure", field: "key_figure_code" },
-      {% for bucket in sess.current_step.layout_year.period_groupings.first.buckets %}
-      { title: "{{ bucket.code }}",
-        field: "M{{ bucket.code }}",
-        editor: "number",
-        bottomCalc: "sum"
-      },
-      {% endfor %}
-    ],
-    cellEdited: (cell) => {
-      changes.push({
-        id:    cell.getRow().getData().id,
-        field: cell.getField(),
-        value: cell.getValue()
+    // build Tabulator columns
+    const cols = [];
+    // 1) driver columns
+    document.querySelectorAll(".driver-filter").forEach(sel=>{
+      const key   = sel.dataset.key;
+      const label = sel.previousElementSibling.innerText;
+      cols.push({
+        title: label,
+        field: key,
+        headerFilter:"select",
+        headerFilterParams: {values:sel.querySelectorAll("option")}
       });
-    }
-  });
-
-  function saveGrid() {
-    if (!changes.length) {
-      return alert("No changes to save.");
-    }
-    fetch(`/api/manual-planning/${SESSION_ID}/${STEP_ID}/`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRFToken":  "{{ csrf_token }}"
-      },
-      body: JSON.stringify({ updates: changes })
-    }).then(resp => {
-      if (resp.ok) {
-        location.reload();
-      } else {
-        alert("Save failed.");
-      }
     });
-  }
+    // 2) period × key‐figure columns
+    buckets.forEach(b => {
+      kfCodes.forEach(kf => {
+        cols.push({
+          title: `${b.name} ${kf}`,
+          field: `${b.code}_${kf}`,
+          editor: "number",
+          bottomCalc: "sum",
+        });
+      });
+    });
 
-  function revertGrid() {
-    changes = [];
-    table.replaceData();
-  }
+    // initialize Tabulator
+    const table = new Tabulator("#planning-grid", {
+      layout: "fitDataStretch",
+      ajaxURL: apiURL,
+      ajaxConfig: {
+        credentials: "include"
+      },
+      ajaxParams: { layout: layoutId },
+      ajaxResponse: (url, params, response) => response,  // expects [{orgunit,service,Jan_HC:…,}]
+      columns: cols,
+      cellEdited: function(cell){
+        const row = cell.getRow().getData();
+        const field = cell.getField();    // e.g. "Jan_HC"
+        const [period, key_figure] = field.split("_");
+        const upd = {
+          org_unit:   row.orgunit,        // pivot API returns lower‐cased keys
+          service:    row.service || null,
+          period:     period,
+          key_figure: key_figure,
+          value:      cell.getValue(),
+        };
+        // accumulate or send immediately
+        fetch(updateURL, {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type":"application/json",
+            "X-CSRFToken": getCookie("csrftoken")
+          },
+          body: JSON.stringify({ layout: layoutId, updates: [upd] })
+        }).then(res=>{
+          if(!res.ok) cell.restoreOldValue();
+        });
+      },
+    });
+
+    // re‐trigger filtering when any driver select changes
+    document.querySelectorAll(".driver-filter").forEach(sel=>{
+      sel.addEventListener("change", ()=>{
+        const filters = [];
+        document.querySelectorAll(".driver-filter").forEach(s=>{
+          if(s.value) filters.push({field:s.dataset.key, type:"=", value:s.value});
+        });
+        table.setFilter(filters);
+      });
+    });
+
+    // Save button forces a full reload
+    document.getElementById("btn-save").addEventListener("click", ()=>{
+      table.replaceData();
+      alert("All visible changes have been saved.");
+    });
+
+    // csrf cookie helper
+    function getCookie(name){
+      let v=null; document.cookie.split(";").forEach(c=>{
+        c=c.trim();
+        if(c.startsWith(name+"=")) v=decodeURIComponent(c.slice(name.length+1));
+      });
+      return v;
+    }
+  })();
 </script>
 {% endblock %}

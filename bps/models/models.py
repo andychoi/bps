@@ -117,11 +117,9 @@ class PeriodGrouping(models.Model):
         unique_together = ('layout_year','months_per_bucket')
 
     def buckets(self):
-        """
-        Return list of dicts: {'code':'Q1','name':'Q1', 'periods':[Period,…]}
-        """
-        from itertools import groupby
-        qs = self.layout_year.layout.year.period_set.order_by('order')
+        # grab the one global list of 12 periods, ordered Jan→Dec
+        from bps.models.models import Period
+        qs = Period.objects.order_by('order')
         months = list(qs)
         size   = self.months_per_bucket
         buckets = []
@@ -180,7 +178,7 @@ class PlanningFact(models.Model):
     account   = models.ForeignKey(Account, null=True, blank=True, on_delete=models.PROTECT)
 
     # Optional domain-specific dimensions
-    dimension_values = models.JSONField(default=dict, help_text="Mapping of extra dimension name → selected dimension key: e.g. {'Position':123, 'SkillGroup':'Developer'}")
+    extra_dimensions_json = models.JSONField(default=dict, help_text="Mapping of extra dimension name → selected dimension key: e.g. {'Position':123, 'SkillGroup':'Developer'}")
 
     # Key figure
     # key_figure  = models.CharField(max_length=100)  
@@ -191,7 +189,7 @@ class PlanningFact(models.Model):
     ref_uom     = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name='+', null=True)
 
     class Meta:
-        unique_together = ('version', 'year', 'period', 'org_unit', 'service', 'account', 'key_figure', 'dimension_values')
+        unique_together = ('version', 'year', 'period', 'org_unit', 'service', 'account', 'key_figure', 'extra_dimensions_json')
         indexes = [
             models.Index(fields=['session','period']),
             models.Index(fields=['session','org_unit','period']),
@@ -314,7 +312,7 @@ class PlanningFunction(models.Model):
                 org_unit   = fact.org_unit,
                 service    = fact.service,
                 account    = fact.account,
-                dimension_values= fact.dimension_values,
+                extra_dimensions_json= fact.extra_dimensions_json,
                 key_figure = fact.key_figure,
                 value      = fact.value,
                 uom        = fact.uom,

@@ -1,3 +1,4 @@
+# bps/models/models_view.py
 from django.db import models
 
 class PivotedPlanningFact(models.Model):
@@ -6,6 +7,7 @@ class PivotedPlanningFact(models.Model):
     org_unit = models.CharField(max_length=50)
     service = models.CharField(max_length=50)
     account = models.CharField(max_length=50)
+    extra_dimensions_json = models.JSONField()
     key_figure = models.CharField(max_length=50)
     # Value columns
     v01 = models.FloatField(null=True, blank=True)

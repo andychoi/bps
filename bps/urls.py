@@ -3,7 +3,7 @@ from django.urls import path, include
 from .views.views import (
     ScenarioDashboardView, PlanningSessionListView, PlanningSessionDetailView, AdvanceStepView, 
     DashboardView, ProfileView, InboxView, NotificationsView,
-    ManualPlanningSelectView, ManualPlanningView,
+    ManualPlanningSelectView,
     PlanningSessionListView, PlanningSessionDetailView, AdvanceStageView,
     ConstantListView, SubFormulaListView, FormulaListView, FormulaRunView,
     CopyActualView, DistributeKeyView,
@@ -11,6 +11,8 @@ from .views.views import (
     ReferenceDataListView, DataRequestListView, DataRequestDetailView,
     FactListView, VariableListView,
 )
+
+from .views.manual_planning import ManualPlanningView
 
 from .views.autocomplete import (
     LayoutAutocomplete, ContentTypeAutocomplete,
@@ -23,8 +25,6 @@ from .views.autocomplete import (
 app_name = "bps"
 
 urlpatterns = [
-    
-    path("api/", include("bps.api.urls")),   # ← now this works, no self-loop
     
     path("scenario/<slug:code>/", ScenarioDashboardView.as_view(), name="scenario_dashboard"),
     path("session/", PlanningSessionListView.as_view(), name="session_list"),

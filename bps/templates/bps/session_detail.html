@@ -1,53 +1,80 @@
 {# templates/bps/session_detail.html #}
 {% extends "bps/base.html" %}
-{% load crispy_forms_tags %} 
+{% load crispy_forms_tags %}
 
 {% block content %}
-  <h1>{{ sess.org_unit.name }} — {{ sess.scenario.name }}</h1>
-  <p>
-    <strong>Step:</strong> {{ stage.name }}  
-    <small class="text-muted">using layout {{ layout.code }}</small>
-  </p>
+  {# -- Breadcrumbs -- #}
+  {% if breadcrumbs %}
+    <nav aria-label="breadcrumb">
+      <ol class="breadcrumb">
+        {% for crumb in breadcrumbs %}
+          <li class="breadcrumb-item {% if forloop.last %}active{% endif %}"
+              {% if forloop.last %}aria-current="page"{% endif %}>
+            {% if not forloop.last %}
+              <a href="{{ crumb.url }}">{{ crumb.title }}</a>
+            {% else %}
+              {{ crumb.title }}
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ol>
+    </nav>
+  {% endif %}
 
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>{{ sess.org_unit.name }} — {{ sess.scenario.name }}</h1>
+    <a
+      href="{% url 'bps:manual_planning' sess.layout_year.layout.id sess.layout_year.year.id sess.layout_year.version.id %}"
+      class="btn btn-outline-primary"
+    >
+      📝 Open Manual Planning Grid
+    </a>
+  </div>
+
+  {# -- Only show “Start Session” if it hasn’t been started yet -- #}
   {% if can_edit %}
-    <form method="post">{% csrf_token %}
+    <form method="post" class="mb-4">
+      {% csrf_token %}
       {{ form|crispy }}
-      <button name="start" class="btn btn-primary">Start Session</button>
+      <button name="start" class="btn btn-success">Start Session</button>
     </form>
   {% endif %}
 
-  <h2>Period Definition</h2>
-  <form method="post">{% csrf_token %}
-    {{ period_form|crispy }}
-    <button name="apply" class="btn btn-secondary">Apply</button>
-  </form>
-
+  {# -- Raw Facts -- #}
   <h2>Raw Facts</h2>
   <table class="table table-striped">
     <thead>
       <tr>
-        <th>Period</th><th>Key Figure</th><th>Value</th><th>UoM</th>
+        <th>Period</th>
+        <th>Key Figure</th>
+        <th>Value</th>
+        <th>UoM</th>
       </tr>
     </thead>
     <tbody>
-      {% for fact in sess.current_facts %}
-      <tr>
-        <td>{{ fact.period.code }}</td>
-        <td>{{ fact.key_figure.code }}</td>
-        <td>{{ fact.value }}</td>
-        <td>{{ fact.uom.code }}</td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="4">No facts yet.</td></tr>
-      {% endfor %}
+      {% if facts %}
+        {% for f in facts %}
+          <tr>
+            <td>{{ f.period.code }}</td>
+            <td>{{ f.key_figure.code }}</td>
+            <td>{{ f.value }}</td>
+            <td>{{ f.uom.code }}</td>
+          </tr>
+        {% endfor %}
+      {% else %}
+        <tr>
+          <td colspan="4" class="text-center text-muted">No facts recorded yet.</td>
+        </tr>
+      {% endif %}
     </tbody>
   </table>
 
-<form method="post" action="{% url 'bps:advance_step' sess.pk %}">
-  {% csrf_token %}
-  <button class="btn btn-sm btn-primary"
-          {% if not user.is_staff %}disabled{% endif %}>
-    Next Step →
-  </button>
-</form>
+  {# -- Advance to Next Step (staff only) -- #}
+  <form method="post" action="{% url 'bps:advance_step' sess.pk %}">
+    {% csrf_token %}
+    <button class="btn btn-primary"
+            {% if not can_advance %}disabled{% endif %}>
+      Next Step →
+    </button>
+  </form>
 {% endblock %}

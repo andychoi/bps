@@ -12,6 +12,8 @@ urlpatterns = [
     path('logout/', auth_views.LogoutView.as_view(), name='logout'),
     # Business Planning System (bps) app
     path('bps/', include('bps.urls', namespace='bps')),
+    path("api/bps/", include(("bps.api.urls", "bps_api"), namespace="bps_api")),
+    
     path('',    include('common.urls', namespace='common')),
     path('accounts/', include('django.contrib.auth.urls')),
 

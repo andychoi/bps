@@ -210,3 +210,49 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f"✅ Created/ensured {created_sc} PlanningScenario entries"
         ))
+
+        for code, name in LAYOUT_DEFS:
+            layout, created = PlanningLayout.objects.get_or_create(
+                code=code,
+                defaults={"name": name, "domain": "cost", "default": False},
+            )
+            layouts[code] = layout
+
+        for code, layout in layouts.items():
+            for idx, (kf_code, kf_label) in enumerate(KF_DEFS[code], start=1):
+                PlanningKeyFigure.objects.get_or_create(
+                    layout=layout,
+                    code=kf_code,
+                    defaults={
+                        "label": kf_label,
+                        "is_editable": True,
+                        "is_computed": False,
+                        "display_order": idx,
+                    }
+                )
+
+        ct_map = {
+            "Position": ContentType.objects.get_for_model(Position),
+            "Skill":    ContentType.objects.get_for_model(Skill),
+            "InternalOrder": ContentType.objects.get_for_model(InternalOrder),
+            "Service":  ContentType.objects.get_for_model(Service),
+            "OrgUnit":  ContentType.objects.get_for_model(OrgUnit),
+        }
+
+        for ply in PlanningLayoutYear.objects.all():
+            # clear out old dims
+            PlanningLayoutDimension.objects.filter(layout_year=ply).delete()
+            for order, model_name in enumerate(ROW_DIMS[ply.layout.code], start=1):
+                PlanningLayoutDimension.objects.create(
+                    layout_year=ply,
+                    content_type=ct_map[model_name],
+                    is_row=True,
+                    is_column=False,
+                    order=order,
+                )
+
+        for code, name, order, parallel in STAGES:
+            PlanningStage.objects.get_or_create(
+                code=code,
+                defaults={"name": name, "order": order, "can_run_in_parallel": parallel},
+            )

@@ -1,7 +1,9 @@
 #. views/manual_planning.py
 from django.views.generic import TemplateView
 from django.shortcuts import redirect, get_object_or_404
-from bps.models import PlanningLayoutYear, Year, Version, Period
+from django.urls import reverse
+from bps.models.models import PlanningLayoutYear, Year, Version, Period
+import json
 
 class ManualPlanningSelectView(TemplateView):
     template_name = 'bps/manual_planning_select.html'
@@ -12,30 +14,41 @@ class ManualPlanningSelectView(TemplateView):
         return ctx
 
 class ManualPlanningView(TemplateView):
-    template_name = 'bps/manual_planning.html'
+    template_name = "bps/manual_planning.html"
 
-    def get_context_data(self, **kwargs):
+    def get_context_data(self, layout_id, year_id, version_id, **kwargs):
         ctx = super().get_context_data(**kwargs)
-        layout_id  = self.kwargs.get('layout_id')
-        year_id    = self.kwargs.get('year_id')
-        version_id = self.kwargs.get('version_id')
-
-        if not (layout_id and year_id and version_id):
-            # no args → redirect to selector
-            return redirect('bps:manual-planning-select')
-
         ly = get_object_or_404(
             PlanningLayoutYear,
             layout_id=layout_id,
             year_id=year_id,
-            version_id=version_id
+            version_id=version_id,
         )
 
+        # pick your “monthly” grouping
+        grouping = ly.period_groupings.filter(months_per_bucket=1).first()
+        raw_buckets = grouping.buckets()  # [{code,name,periods(model instances)}, …]
+
+        # build a JSON-safe version (just use period.code)
+        buckets_js = []
+        for b in raw_buckets:
+            buckets_js.append({
+                "code":    b["code"],
+                "name":    b["name"],
+                "periods": [p.code for p in b["periods"]],
+            })
+
+        # drivers, kf_codes etc. (unchanged)…
+
+        api_url    = reverse("bps_api:bps_planning_pivot")
+        update_url = reverse("bps_api:bps_planning_grid_update")
+
         ctx.update({
-            'layout_year': ly,
-            'layout':      ly.layout,
-            'year':        ly.year,
-            'version':     ly.version,
-            'periods':     Period.objects.order_by('order'),
+            "layout_year": ly,
+            "buckets_js":  json.dumps(buckets_js),
+            "kf_codes":    json.dumps([kf.code for kf in ly.layout.key_figures.all()]),
+            "api_url":     api_url,
+            "update_url":  update_url,
+            # …drivers as before, but JSON-dumped similarly if you use them in JS
         })
         return ctx

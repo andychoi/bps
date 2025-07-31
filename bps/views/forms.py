@@ -14,7 +14,7 @@ class FactForm(forms.ModelForm):
     class Meta:
         model = PlanningFact
         fields = [
-            'service', 'account', 'dimension_values',
+            'service', 'account', 'extra_dimensions_json',
             'key_figure', 'value', 'uom',
             'ref_value', 'ref_uom'
         ]
@@ -33,7 +33,7 @@ class FactForm(forms.ModelForm):
             Row(
                 Column('service',   css_class='col-md-4'),
                 Column('account',   css_class='col-md-4'),
-                Column('dimension_values', css_class='col-md-4'),
+                Column('extra_dimensions_json', css_class='col-md-4'),
             ),
             Row(
                 Column('key_figure', css_class='col-md-4'),

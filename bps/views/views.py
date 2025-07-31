@@ -143,22 +143,6 @@ class ManualPlanningSelectView(TemplateView):
         )
         return ctx
 
-
-class ManualPlanningView(TemplateView):
-    template_name = "bps/manual_planning.html"
-
-    def get_context_data(self, layout_id, year_id, version_id, **kwargs):
-        ctx = super().get_context_data(**kwargs)
-        ctx["layout"]      = PlanningLayout.objects.get(pk=layout_id)
-        ctx["year"]        = Year.objects.get(pk=year_id)
-        ctx["version"]     = Version.objects.get(pk=version_id)
-        ctx["layout_year"] = PlanningLayoutYear.objects.filter(
-            layout_id=layout_id, year_id=year_id, version_id=version_id
-        ).first()
-        ctx["periods"]     = Period.objects.all().order_by("order")
-        return ctx
-
-
 # ── Planning Sessions ───────────────────────────────────────────────────────
 
 class PlanningSessionListView(ListView):
@@ -190,42 +174,63 @@ class PlanningSessionDetailView(FormMixin, DetailView):
         return kwargs
 
     def get_context_data(self, **ctx):
-        sess = self.object
-        ctx = super().get_context_data(**ctx)
-
-        # Which step and layout are we on?
+        sess   = self.object
+        # 1) grab the current step & stage
         step   = sess.current_step
         stage  = step.stage
-        layout = step.layout
 
-        # Period selector for the layout-year’s groupings
-        period_form = PeriodSelector(session=sess)
+        # 2) session + layout metadata
+        ly      = sess.layout_year
+        layout  = ly.layout
+        version = ly.version
 
-        # Most recent DataRequest (for “raw facts”)
-        dr = sess.requests.order_by('-created_at').first()
+        # 3) pick the MONTHLY grouping by default
+        grouping = ly.period_groupings.filter(months_per_bucket=1).first()
+        buckets  = grouping.buckets()
 
-        # All facts for this session
+        # 4) build your “driver” dimensions (rows)
+        drivers = []
+        for ld in ly.layout_dimensions.filter(is_row=True).order_by('order'):
+            Model = ld.content_type.model_class()
+            qs    = Model.objects.filter(pk__in=ld.allowed_values) \
+                    if ld.allowed_values else Model.objects.all()
+            drivers.append({
+                "key":     ld.content_type.model,
+                "label":   ld.content_type.model.title(),
+                "choices": [{"id":o.pk,"name":str(o)} for o in qs],
+            })
+
+        # 5) pull out the key-figure codes in layout order
+        kf_codes = [kf.code for kf in layout.key_figures.all()]
+
+        # 6) compute your pivot API URL
+        from django.urls import reverse
+        api_url = reverse('bps_api:bps_planning_pivot')
+
+        # 7) leave the old raw‐facts in case you still need them
+        dr    = sess.requests.order_by('-created_at').first()
         facts = sess.planningfact_set.filter(request=dr) if dr else []
 
+        ctx = super().get_context_data(**ctx)
         ctx.update({
-            "can_edit":     sess.can_edit(self.request.user),
-            "form":         self.get_form(),
-            "period_form":  period_form,
+            "sess":         sess,
             "current_step": step,
             "stage":        stage,
             "layout":       layout,
             "dr":           dr,
             "facts":        facts,
-            # breadcrumbs for convenience
+            "buckets":      buckets,
+            "drivers":      drivers,
+            "kf_codes":     kf_codes,
+            "api_url":      api_url,
+            "can_edit":     sess.can_edit(self.request.user),
+            "form":         self.get_form(),
             "breadcrumbs": [
-                {"url": reverse("bps:dashboard"),      "title": "Dashboard"},
-                {"url": reverse("bps:session_list"),   "title": "Sessions"},
-                {"url": self.request.path,             "title": f"{sess.org_unit.name}"},
+                {"url": reverse("bps:dashboard"),    "title": "Dashboard"},
+                {"url": reverse("bps:session_list"), "title": "Sessions"},
+                {"url": self.request.path,           "title": sess.org_unit.name},
             ],
-            "can_advance":  self.request.user.is_staff and bool(
-                                sess.current_step and
-                                sess.scenario.steps.filter(order__gt=step.order).exists()
-                            ),
+            "can_advance":  self.request.user.is_staff and sess.scenario.steps.filter(order__gt=step.order).exists(),
         })
         return ctx
 

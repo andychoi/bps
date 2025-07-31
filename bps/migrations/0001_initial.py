@@ -576,7 +576,7 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 (
-                    "dimension_values",
+                    "extra_dimensions_json",
                     models.JSONField(
                         default=dict,
                         help_text="Mapping of extra dimension name → selected dimension key: e.g. {'Position':123, 'SkillGroup':'Developer'}",
@@ -1744,7 +1744,7 @@ class Migration(migrations.Migration):
                     "service",
                     "account",
                     "key_figure",
-                    "dimension_values",
+                    "extra_dimensions_json",
                 )
             },
         ),
