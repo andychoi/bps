@@ -1,46 +1,44 @@
 # bps/management/commands/cleanup_bps_demo.py
+
 from django.core.management.base import BaseCommand
 from django.apps import apps
+from django.db import connection, transaction
 
 class Command(BaseCommand):
-    help = 'Clean up all BPS demo data in correct dependency order'
+    help = 'Clean up all BPS demo data in correct dependency order (with fast truncate for PlanningFact)'
 
     def handle(self, *args, **options):
-        # tear down in reverse‐dependency order
+        # 1) truncate the big fact table directly in SQL
+        self.stdout.write("→ Truncating PlanningFact via raw SQL…")
+        with connection.cursor() as cursor:
+            # Adjust quoting if you have a custom schema or quoting requirements
+            cursor.execute('TRUNCATE TABLE "bps_planningfact" CASCADE;')
+        self.stdout.write(self.style.SUCCESS("   ● PlanningFact truncated"))
+
+        # 2) now delete everything else
         to_delete = [
-            # formula runs & entries
-            ('bps', 'FormulaRunEntry'),
-            ('bps', 'FormulaRun'),
-            # fact dimensions & logs
-            ('bps', 'PlanningFactDimension'),
             ('bps', 'DataRequestLog'),
-            # facts & their request/session
-            ('bps', 'PlanningFact'),
+            ('bps', 'PlanningFactDimension'),
             ('bps', 'DataRequest'),
             ('bps', 'PlanningSession'),
-            # workflow through‐tables
+            ('bps', 'FormulaRunEntry'),
+            ('bps', 'FormulaRun'),
             ('bps', 'ScenarioFunction'),
             ('bps', 'ScenarioStep'),
             ('bps', 'ScenarioStage'),
             ('bps', 'ScenarioOrgUnit'),
-            # scenario & stages
             ('bps', 'PlanningScenario'),
             ('bps', 'PlanningStage'),
-            # layout pieces
             ('bps', 'PeriodGrouping'),
             ('bps', 'PlanningLayoutDimension'),
             ('bps', 'PlanningKeyFigure'),
             ('bps', 'PlanningDimension'),
             ('bps', 'PlanningLayoutYear'),
             ('bps', 'PlanningLayout'),
-            # functions & formulas
-            ('bps', 'ScenarioFunction'),
             ('bps', 'PlanningFunction'),
             ('bps', 'Formula'),
             ('bps', 'SubFormula'),
-            # reference data
             ('bps', 'ReferenceData'),
-            # resources
             ('bps', 'RateCard'),
             ('bps', 'Position'),
             ('bps', 'Employee'),
@@ -48,20 +46,16 @@ class Command(BaseCommand):
             ('bps', 'MSPStaff'),
             ('bps', 'Resource'),
             ('bps', 'Skill'),
-            # services & cost masters
             ('bps', 'Service'),
             ('bps', 'InternalOrder'),
             ('bps', 'CostCenter'),
             ('bps', 'CBU'),
             ('bps', 'OrgUnit'),
-            # units & conversions
             ('bps', 'ConversionRate'),
             ('bps', 'UnitOfMeasure'),
-            # key figures & constants & variables
             ('bps', 'KeyFigure'),
             ('bps', 'GlobalVariable'),
             ('bps', 'Constant'),
-            # time dimensions
             ('bps', 'Period'),
             ('bps', 'Version'),
             ('bps', 'Year'),

@@ -189,7 +189,7 @@ class PlanningFact(models.Model):
     ref_uom     = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name='+', null=True)
 
     class Meta:
-        unique_together = ('version', 'year', 'period', 'org_unit', 'service', 'account', 'key_figure', 'extra_dimensions_json')
+        # unique_together = ('version', 'year', 'period', 'org_unit', 'service', 'account', 'key_figure', 'extra_dimensions_json')
         indexes = [
             models.Index(fields=['session','period']),
             models.Index(fields=['session','org_unit','period']),
