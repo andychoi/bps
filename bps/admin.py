@@ -9,7 +9,7 @@ from .models.models import (
     KeyFigure, DataRequest, DataRequestLog, PlanningFact,
     PlanningSession, PlanningStage,
     PlanningLayout, PlanningLayoutYear, PlanningDimension, PlanningKeyFigure,
-    Period, PeriodGrouping, RateCard, Position
+    Period, PeriodGrouping, RateCard, Position, PlanningLayoutDimension
 )
 from .models.models_dimension import (
     Year, Version, OrgUnit, Account, Service, CBU, CostCenter, InternalOrder
@@ -188,6 +188,11 @@ class PlanningLayoutAdmin(admin.ModelAdmin):
     list_display = ('code', 'name', 'domain', 'default')
     inlines      = [PlanningDimensionInline, PlanningKeyFigureInline, LayoutYearInline]
 
+class PlanningLayoutDimensionInline(admin.TabularInline):
+    model = PlanningLayoutDimension
+    extra = 1
+    fields = ('content_type','is_row','is_column','order','allowed_values','filter_criteria')
+
 
 @admin.register(PlanningLayoutYear)
 class PlanningLayoutYearAdmin(admin.ModelAdmin):
@@ -195,6 +200,7 @@ class PlanningLayoutYearAdmin(admin.ModelAdmin):
     filter_horizontal = ('org_units', 'row_dims')
     search_fields     = ('layout__code',)
     list_filter       = ('layout', 'year', 'version')
+    inlines           = [PlanningLayoutDimensionInline]  
 
 
 # ── Period & Grouping ──────────────────────────────────────────────────────

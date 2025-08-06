@@ -1,23 +1,48 @@
-# bps/api/urls.py
 from django.urls import path, include
-from .views_manual import ManualPlanningGridAPIView, PlanningGridAPIView, PlanningGridBulkUpdateAPIView
-from .views import PlanningFactPivotedAPIView
-from ..views.viewsets import PlanningFactViewSet, OrgUnitViewSet
 from rest_framework.routers import DefaultRouter
+
+from .api import (
+    PlanningGridView,
+    PlanningGridBulkUpdateView,
+)
+from .views_manual import ManualPlanningGridAPIView
+from ..views.viewsets import PlanningFactViewSet, OrgUnitViewSet
+from .views import PlanningFactPivotedAPIView
 
 app_name = "bps_api"
 
+# Router for REST viewsets
 router = DefaultRouter()
-router.register(r'facts',    PlanningFactViewSet, basename='facts')
-router.register(r'orgunits', OrgUnitViewSet,    basename='orgunits')
+router.register(r'facts',    PlanningFactViewSet,  basename='facts')
+router.register(r'orgunits', OrgUnitViewSet,     basename='orgunits')
 
 urlpatterns = [
-    # DRF router
+    # built-in viewsets
     path("", include(router.urls)),
 
-    # Extra endpoints
-    path("bps_planning_grid/",          PlanningGridAPIView.as_view(),       name="bps_planning_grid"),
-    path("planning-grid/",              ManualPlanningGridAPIView.as_view(), name="manual_planning_grid"),
-    path("bps_planning_grid_update/",   PlanningGridBulkUpdateAPIView.as_view(), name="bps_planning_grid_update"),
-    path("bps_planning_pivot/",         PlanningFactPivotedAPIView.as_view(),   name="bps_planning_pivot"),
+    # manual planning UI endpoints (used by Tabulator)
+    path(
+        "manual-grid/",
+        ManualPlanningGridAPIView.as_view(),
+        name="manual_planning_grid",
+    ),
+
+    # JSON grid endpoints (simpler planning-grid endpoints are best reserved for other grid UI use-cases (e.g. ad-hoc exports, dashboards, etc.).
+    path(
+        "grid/",
+        PlanningGridView.as_view(),
+        name="planning_grid",
+    ),
+    path(
+        "grid-update/",
+        PlanningGridBulkUpdateView.as_view(),
+        name="planning_grid_update",
+    ),
+
+    # pivot endpoint (if still needed by other UIs)
+    path(
+        "pivot/",
+        PlanningFactPivotedAPIView.as_view(),
+        name="planning_pivot",
+    ),
 ]

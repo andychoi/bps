@@ -1,4 +1,4 @@
-# api/views_manual.py
+# api/views_manual.py for template-driven UI
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.db import transaction
@@ -21,7 +21,7 @@ class ManualPlanningGridAPIView(APIView):
         version   = request.query_params.get('version')
         use_ref   = request.query_params.get('ref') == '1'
         ly = get_object_or_404(PlanningLayoutYear, pk=layout_id)
-        facts = PlanningFact.objects.filter(session__layout_year=ly)
+        facts = PlanningFact.objects.filter(session__scenario__layout_year=ly)
         if year_id:
             facts = facts.filter(year_id=year_id)
         if version:
@@ -38,7 +38,7 @@ class ManualPlanningGridAPIView(APIView):
         errors = []
         for upd in payload.get('updates', []):
             try:
-                fact = PlanningFact.objects.get(pk=upd['id'], session__layout_year=ly)
+                fact = PlanningFact.objects.get(pk=upd['id'], session__scenario__layout_year=ly)
                 # Only allow the two numeric fields
                 if upd['field'] not in ('value','ref_value'):
                     raise ValueError(f"Cannot edit field {upd['field']}")
@@ -90,13 +90,13 @@ class PlanningGridAPIView(APIView):
 
         # 4. load facts for each
         base_qs = PlanningFact.objects.filter(
-            session__layout_year=base_ly
+            session__scenario__layout_year=base_ly
         ).select_related("period", "key_figure", "org_unit", "service")
 
         compare_qs = None
         if compare_ly:
             compare_qs = PlanningFact.objects.filter(
-                session__layout_year=compare_ly
+                session__scenario__layout_year=compare_ly
             ).select_related("period", "key_figure", "org_unit", "service")
 
         # 5. pivot into rows
@@ -147,7 +147,7 @@ class PlanningGridBulkUpdateAPIView(APIView):
 
         # 1) Fetch the layout_year context
         ly = get_object_or_404(PlanningLayoutYear, pk=layout_id)
-        facts_qs = PlanningFact.objects.filter(session__layout_year=ly)
+        facts_qs = PlanningFact.objects.filter(session__scenario__layout_year=ly)
         if version:
             facts_qs = facts_qs.filter(version__code=version)
         if year_code:
@@ -174,7 +174,7 @@ class PlanningGridBulkUpdateAPIView(APIView):
             try:
                 fact = PlanningFact.objects.select_related(
                     "org_unit", "service", "key_figure", "period"
-                ).get(pk=fact_id, session__layout_year=ly)
+                ).get(pk=fact_id, session__scenario__layout_year=ly)
             except PlanningFact.DoesNotExist:
                 errors.append({"update": upd, "error": "Fact not found"})
                 continue

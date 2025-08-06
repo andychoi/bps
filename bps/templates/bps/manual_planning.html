@@ -1,134 +1,179 @@
-{# templates/bps/manual_planning.html #}
 {% extends "bps/base.html" %}
 {% load static %}
-{% block title %}Manual Planning – {{ layout_year.layout.name }}{% endblock %}
-
+{% block title %}
+Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{{ layout_year.version.code }})
+{% endblock %}
 {% block content %}
 <div class="container-fluid mt-3">
   <div class="d-flex justify-content-between align-items-center mb-3">
     <h2>
       Manual Planning – {{ layout_year.layout.name }}
-      ({{ layout_year.year.code }}/{{ layout_year.version.code }})
+      <small class="text-muted">({{ layout_year.year.code }}/{{ layout_year.version.code }})</small>
     </h2>
-    <button class="btn btn-primary" id="btn-save">Save Changes</button>
+    <div>
+      <button class="btn btn-primary me-2" id="btn-save">Save Changes</button>
+      <a class="btn btn-outline-secondary" href="{% url 'admin:bps_planninglayout_change' layout_year.layout.pk %}">Edit Layout</a>
+    </div>
   </div>
-
   <div class="row mb-2">
-    {% for drv in drivers %}
-      <div class="col-auto">
-        <label class="form-label">{{ drv.label }}</label>
-        <select class="form-select driver-filter" data-key="{{ drv.key }}">
-          <option value="">All {{ drv.label }}</option>
-          {% for opt in drv.choices %}
-            <option value="{{ opt.id }}">{{ opt.name }}</option>
-          {% endfor %}
-        </select>
-      </div>
+    {# Only include dynamic drivers beyond org_unit and service to avoid duplication #}
+    {% for drv in drivers_for_template %}
+      {% if drv.key != 'orgunit' and drv.key != 'service' %}
+        <div class="col-auto">
+          <label class="form-label" for="driver-{{ drv.key }}">{{ drv.label }}</label>
+          <select id="driver-{{ drv.key }}"
+                  class="form-select driver-filter"
+                  data-key="{{ drv.key }}">
+            <option value="">{{ drv.label }}</option>
+            {% for opt in drv.choices %}
+              <option value="{{ opt.id }}">{{ opt.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      {% endif %}
     {% endfor %}
+    <div id="manual-planning-toolbar" class="col-auto align-self-end mb-2">
+      <button id="add-row-btn" class="btn btn-sm btn-outline-primary">Add Row</button>
+    </div>
   </div>
-
   <div id="planning-grid"></div>
 </div>
 {% endblock %}
-
 {% block extra_js %}
-<script src="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3/dist/js/tabulator.min.js"></script>
-<link href="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3/dist/css/tabulator.min.css" rel="stylesheet"/>
-
+<link href="https://cdn.jsdelivr.net/npm/tabulator-tables@6.2.1/dist/css/tabulator.min.css" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/tabulator-tables@6.2.1/dist/js/tabulator.min.js"></script>
 <script>
-  (function(){
-    const apiURL    = "{{ api_url }}";
-    const updateURL = "{{ update_url }}";
-    const layoutId  = {{ layout_year.pk }};
-    const buckets   = {{ buckets_js|safe }};    // list of {code,name,periods}
-    const kfCodes   = {{ kf_codes|safe }};   // e.g. ["HC","COST",…]
+(function(){
+  // Context variables
+  const apiURL    = "{{ api_url }}";
+  const updateURL = "{{ update_url }}";
+  const layoutId  = {{ layout_year.pk }};
+  const buckets   = {{ buckets_js|safe }};
+  const kfCodes   = {{ kf_codes|safe }};
+  const drivers   = {{ drivers_js|safe }};
+  const services  = {{ services_js|safe }};
+  const orgUnits  = {{ org_units_js|safe }};
 
-    // build Tabulator columns
-    const cols = [];
-    // 1) driver columns
-    document.querySelectorAll(".driver-filter").forEach(sel=>{
-      const key   = sel.dataset.key;
-      const label = sel.previousElementSibling.innerText;
-      cols.push({
-        title: label,
-        field: key,
-        headerFilter:"select",
-        headerFilterParams: {values:sel.querySelectorAll("option")}
-      });
-    });
-    // 2) period × key‐figure columns
-    buckets.forEach(b => {
-      kfCodes.forEach(kf => {
-        cols.push({
-          title: `${b.name} ${kf}`,
-          field: `${b.code}_${kf}`,
-          editor: "number",
-          bottomCalc: "sum",
+  // Build lookup maps
+  const orgUnitMap = orgUnits.reduce((acc, o) => (acc[o.code] = o.name, acc), {});
+  const serviceMap = services.reduce((acc, s) => (acc[s.code] = s.name, acc), {});
+  const driverMaps = {};
+  drivers.forEach(d => {
+    driverMaps[d.key] = d.choices.reduce((acc, opt) => (acc[opt.id] = opt.name, acc), {});
+  });
+
+  // Blank row template
+  const blankRow = {
+    org_unit: null,
+    service:  null,
+    ...drivers.reduce((acc, d) => ({...acc, [d.key]: null}), {}),
+    ...buckets.flatMap(b =>
+      kfCodes.map(kf => ({ [`${b.code}_${kf}`]: null }))
+    ).reduce((acc, obj) => ({...acc, ...obj}), {}),
+  };
+
+  // Define columns
+  const columns = [
+    { title: "Org Unit", field: "org_unit", frozen: true, width: 150,
+      editor: "select", editorParams: { values: orgUnitMap },
+      formatter: "lookup", formatterParams: orgUnitMap,
+      headerFilter: "select", headerFilterParams: { values: orgUnitMap },
+    },
+    { title: "Service", field: "service", width: 150,
+      editor: "select", editorParams: { values: serviceMap },
+      formatter: "lookup", formatterParams: serviceMap,
+      headerFilter: "select", headerFilterParams: { values: serviceMap },
+    },
+    ...drivers
+      .filter(d => d.key !== 'orgunit' && d.key !== 'service')
+      .map(d => ({
+        title: d.label,
+        field: d.key,
+        width: 120,
+        editor: "select",
+        editorParams: { values: driverMaps[d.key] },
+        formatter: "lookup",
+        formatterParams: driverMaps[d.key],
+        headerFilter: "select",
+        headerFilterParams: { values: driverMaps[d.key] },
+      })),
+    ...buckets.flatMap(b =>
+      kfCodes.map(kf => ({
+        title: `${b.name} ${kf}`,
+        field: `${b.code}_${kf}`,
+        editor: "number",
+        hozAlign: "right",
+        bottomCalc: "sum",
+        formatter: "money",
+        formatterParams: { symbol: "", precision: 2 }
+      }))
+    ),
+  ];
+
+  // Initialize Tabulator
+  const table = new Tabulator("#planning-grid", {
+    layout: "fitColumns",
+    pagination: "local",
+    paginationSize: 50,
+    ajaxURL: apiURL,
+    ajaxConfig: { credentials: "include" },
+    ajaxParams: { layout: layoutId },
+    ajaxResponse: (_url, _params, res) => res.data || res,
+    columns: columns,
+    history: true,
+  });
+
+  // Add row handler
+  document.getElementById("add-row-btn").addEventListener("click", () => {
+    table.addRow({...blankRow}, true)
+      .then(row => row.getCell("org_unit").edit())
+      .catch(console.error);
+  });
+
+  // Save changes handler
+  document.getElementById("btn-save").addEventListener("click", () => {
+    const actions = table.getHistory().getActions();
+    if (!actions.length) return alert("No changes to save.");
+    const updates = [];
+    table.getRows().forEach(row => {
+      if (row.isEdited() || row.isNew()) {
+        const data = row.getData();
+        const base = { layout: layoutId, org_unit: data.org_unit, service: data.service };
+        drivers.forEach(d => base[d.key] = data[d.key]);
+        row.getCells().forEach(cell => {
+          if (!cell.isEdited()) return;
+          const field = cell.getField();
+          if (!field.includes("_")) return;
+          const [period, kf] = field.split("_");
+          updates.push({ ...base, period, key_figure: kf, value: cell.getValue() });
         });
-      });
+      }
     });
-
-    // initialize Tabulator
-    const table = new Tabulator("#planning-grid", {
-      layout: "fitDataStretch",
-      ajaxURL: apiURL,
-      ajaxConfig: {
-        credentials: "include"
-      },
-      ajaxParams: { layout: layoutId },
-      ajaxResponse: (url, params, response) => response,  // expects [{orgunit,service,Jan_HC:…,}]
-      columns: cols,
-      cellEdited: function(cell){
-        const row = cell.getRow().getData();
-        const field = cell.getField();    // e.g. "Jan_HC"
-        const [period, key_figure] = field.split("_");
-        const upd = {
-          org_unit:   row.orgunit,        // pivot API returns lower‐cased keys
-          service:    row.service || null,
-          period:     period,
-          key_figure: key_figure,
-          value:      cell.getValue(),
-        };
-        // accumulate or send immediately
-        fetch(updateURL, {
-          method: "POST",
-          credentials: "include",
-          headers: {
-            "Content-Type":"application/json",
-            "X-CSRFToken": getCookie("csrftoken")
-          },
-          body: JSON.stringify({ layout: layoutId, updates: [upd] })
-        }).then(res=>{
-          if(!res.ok) cell.restoreOldValue();
-        });
-      },
-    });
-
-    // re‐trigger filtering when any driver select changes
-    document.querySelectorAll(".driver-filter").forEach(sel=>{
-      sel.addEventListener("change", ()=>{
-        const filters = [];
-        document.querySelectorAll(".driver-filter").forEach(s=>{
-          if(s.value) filters.push({field:s.dataset.key, type:"=", value:s.value});
-        });
-        table.setFilter(filters);
-      });
-    });
-
-    // Save button forces a full reload
-    document.getElementById("btn-save").addEventListener("click", ()=>{
+    if (!updates.length) return alert("No changes to save.");
+    fetch(updateURL, {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },
+      body: JSON.stringify({ layout: layoutId, updates }),
+    })
+    .then(res => res.ok ? res.json() : res.json().then(err => Promise.reject(err)))
+    .then(() => {
+      alert("All changes saved successfully.");
+      table.clearHistory();
       table.replaceData();
-      alert("All visible changes have been saved.");
-    });
+    })
+    .catch(err => { console.error(err); alert("Save failed: " + (err.detail || JSON.stringify(err))); });
+  });
 
-    // csrf cookie helper
-    function getCookie(name){
-      let v=null; document.cookie.split(";").forEach(c=>{
-        c=c.trim();
-        if(c.startsWith(name+"=")) v=decodeURIComponent(c.slice(name.length+1));
-      });
-      return v;
-    }
-  })();
+  // CSRF helper
+  function getCookie(name) {
+    let v = null;
+    document.cookie.split(';').forEach(c => {
+      c = c.trim();
+      if (c.startsWith(name + '=')) v = decodeURIComponent(c.slice(name.length + 1));
+    });
+    return v;
+  }
+})();
 </script>
 {% endblock %}

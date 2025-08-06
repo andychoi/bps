@@ -73,6 +73,9 @@ class KeyFigure(models.Model):
     is_percent = models.BooleanField(default=False)
     default_uom = models.ForeignKey(UnitOfMeasure, null=True, on_delete=models.SET_NULL)
 
+    def __str__(self):
+        return self.code
+
 # Pre-populate some KeyFigures for your rates:
 # hourly_rate = KeyFigure.objects.create(code='HOURLY_RATE', name='Hourly Rate (Fully Loaded)')
 # base_salary_hourly_equiv = KeyFigure.objects.create(code='BASE_SALARY_HRLY', name='Base Salary Hourly Equivalent')
@@ -164,6 +167,7 @@ class PlanningFact(models.Model):
     """
     Core Models (EAV-style with fixed dimension FK)
     One “row” of plan data for a given DataRequest + Period.
+    Fine-grained (all dimensions)
     """
     request     = models.ForeignKey(DataRequest, on_delete=models.PROTECT)    # move to ReqeustLogs
     session     = models.ForeignKey(PlanningSession, on_delete=models.CASCADE)
@@ -216,11 +220,24 @@ class PlanningFact(models.Model):
 # ── 6. Pivoted Planning Fact View ───────────────────────────────────────────
 from .models_view import *  
 
+""" duplicate with extra_dimensions_json, obsolete model
+"""
 class PlanningFactDimension(models.Model):
     fact       = models.ForeignKey(PlanningFact, on_delete=models.CASCADE, related_name="fact_dimensions")
-    dimension  = models.ForeignKey(PlanningLayoutDimension, on_delete=models.PROTECT)
+    # “which dimension” metadata
+    dimension = models.ForeignKey(PlanningLayoutDimension, on_delete=models.PROTECT)
+    # the *value* for that dimension:
+    # we know dimensions map to real tables like Position, Service, etc.
+    # so you can store either:
+    # (a) a generic FK: content_type + object_id, or
+    # (b) a simple integer `value_id` if you know your layout_dimensions → model_type ahead of time
     value_id   = models.PositiveIntegerField(help_text="PK of the chosen dimension value")
-
+    class Meta:
+        unique_together = (("fact", "dimension"),)
+        indexes = [
+            # accelerate lookups of “fact by dimension/value”
+            models.Index(fields=["dimension","value_id"]),
+        ]
 
 class DataRequestLog(TimestampModel):
     """A log of every change made to a planning fact."""
@@ -417,8 +434,8 @@ class ReferenceData(models.Model):
     
     def fetch_reference_fact(self, **filters):
         return PlanningFact.objects.filter(
-            session__layout_year__version=self.source_version,
-            session__layout_year__year=self.source_year,
+            session__scenario__layout_year__version=self.source_version,
+            session__scenario__layout_year__year=self.source_year,
             **filters
         ).aggregate(Sum('value'))
 

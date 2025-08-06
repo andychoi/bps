@@ -45,6 +45,8 @@ class KeyFigure(models.Model):
     name = models.CharField(max_length=200)
     is_percent = models.BooleanField(default=False)
     default_uom = models.ForeignKey(UnitOfMeasure, null=True, on_delete=models.SET_NULL)
+    def __str__(self):
+        return self.code
 from .models_layout import *
 class Period(models.Model):
     code   = models.CharField(max_length=2, unique=True)
@@ -60,8 +62,8 @@ class PeriodGrouping(models.Model):
     class Meta:
         unique_together = ('layout_year','months_per_bucket')
     def buckets(self):
-        from itertools import groupby
-        qs = self.layout_year.layout.year.period_set.order_by('order')
+        from bps.models.models import Period
+        qs = Period.objects.order_by('order')
         months = list(qs)
         size   = self.months_per_bucket
         buckets = []
@@ -97,14 +99,13 @@ class PlanningFact(models.Model):
     org_unit    = models.ForeignKey(OrgUnit, on_delete=models.PROTECT)
     service   = models.ForeignKey(Service, null=True, blank=True, on_delete=models.PROTECT)
     account   = models.ForeignKey(Account, null=True, blank=True, on_delete=models.PROTECT)
-    dimension_values = models.JSONField(default=dict, help_text="Mapping of extra dimension name → selected dimension key: e.g. {'Position':123, 'SkillGroup':'Developer'}")
+    extra_dimensions_json = models.JSONField(default=dict, help_text="Mapping of extra dimension name → selected dimension key: e.g. {'Position':123, 'SkillGroup':'Developer'}")
     key_figure  = models.ForeignKey(KeyFigure, on_delete=models.PROTECT)
     value       = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     uom         = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name='+', null=True)
     ref_value   = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     ref_uom     = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name='+', null=True)
     class Meta:
-        unique_together = ('version', 'year', 'period', 'org_unit', 'service', 'account', 'key_figure', 'dimension_values')
         indexes = [
             models.Index(fields=['session','period']),
             models.Index(fields=['session','org_unit','period']),
@@ -126,8 +127,13 @@ class PlanningFact(models.Model):
 from .models_view import *
 class PlanningFactDimension(models.Model):
     fact       = models.ForeignKey(PlanningFact, on_delete=models.CASCADE, related_name="fact_dimensions")
-    dimension  = models.ForeignKey(PlanningLayoutDimension, on_delete=models.PROTECT)
+    dimension = models.ForeignKey(PlanningLayoutDimension, on_delete=models.PROTECT)
     value_id   = models.PositiveIntegerField(help_text="PK of the chosen dimension value")
+    class Meta:
+        unique_together = (("fact", "dimension"),)
+        indexes = [
+            models.Index(fields=["dimension","value_id"]),
+        ]
 class DataRequestLog(TimestampModel):
     request     = models.ForeignKey(DataRequest, on_delete=models.CASCADE, related_name='log_entries')
     fact        = models.ForeignKey(PlanningFact, on_delete=models.CASCADE)
@@ -190,7 +196,7 @@ class PlanningFunction(models.Model):
                 org_unit   = fact.org_unit,
                 service    = fact.service,
                 account    = fact.account,
-                dimension_values= fact.dimension_values,
+                extra_dimensions_json= fact.extra_dimensions_json,
                 key_figure = fact.key_figure,
                 value      = fact.value,
                 uom        = fact.uom,
@@ -526,6 +532,7 @@ class PivotedPlanningFact(models.Model):
     org_unit = models.CharField(max_length=50)
     service = models.CharField(max_length=50)
     account = models.CharField(max_length=50)
+    extra_dimensions_json = models.JSONField()
     key_figure = models.CharField(max_length=50)
     v01 = models.FloatField(null=True, blank=True)
     v02 = models.FloatField(null=True, blank=True)
@@ -640,6 +647,9 @@ class PlanningSession(models.Model):
         unique_together = ('scenario','org_unit')
     def __str__(self):
         return f"{self.org_unit.name} - {self.layout_year}"
+    @property
+    def layout_year(self):
+        return self.scenario.layout_year
     def can_edit(self, user):
         if self.status == self.Status.DRAFT and user == self.org_unit.head_user:
             return True
