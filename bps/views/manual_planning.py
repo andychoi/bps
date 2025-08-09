@@ -20,10 +20,17 @@ class ManualPlanningView(TemplateView):
         # periods / buckets
         grouping    = ly.period_groupings.filter(months_per_bucket=1).first()
         raw_buckets = grouping.buckets()
-        buckets_js  = [
-            {"code": b["code"], "name": b["name"], "periods": [p.code for p in b["periods"]]}
-            for b in raw_buckets
-        ]
+        buckets_js  = []
+        for b in raw_buckets:
+            periods_codes = [p.code for p in b["periods"]]
+            # If grouping is monthly (size==1), make the bucket code equal the Period.code (e.g. "01")
+            bucket_code = periods_codes[0] if len(periods_codes) == 1 else b["code"]
+            bucket_name = b["periods"][0].name if len(periods_codes) == 1 else b["name"]
+            buckets_js.append({
+                "code": bucket_code,
+                "name": bucket_name,
+                "periods": periods_codes,
+            })
 
         # drivers
         # This list is for the Django template loop to build filters
@@ -59,7 +66,7 @@ class ManualPlanningView(TemplateView):
             "kf_codes":    json.dumps([kf.code for kf in ly.layout.key_figures.order_by("display_order")]),
             "drivers_for_template": drivers_for_template, # For the template loop
             "drivers_js":  json.dumps(drivers_for_js),   # For the script block
-            "api_url":     reverse("bps_api:planning_pivot"),
+            "api_url":     reverse("bps_api:planning_grid"),
             "update_url":  reverse("bps_api:planning_grid_update"),
             "services_js": json.dumps(services),
             "org_units_js":json.dumps(org_units),

@@ -3,6 +3,7 @@
 {% block title %}
 Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{{ layout_year.version.code }})
 {% endblock %}
+
 {% block content %}
 <div class="container-fluid mt-3">
   <div class="d-flex justify-content-between align-items-center mb-3">
@@ -15,15 +16,13 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       <a class="btn btn-outline-secondary" href="{% url 'admin:bps_planninglayout_change' layout_year.layout.pk %}">Edit Layout</a>
     </div>
   </div>
+
   <div class="row mb-2">
-    {# Only include dynamic drivers beyond org_unit and service to avoid duplication #}
     {% for drv in drivers_for_template %}
       {% if drv.key != 'orgunit' and drv.key != 'service' %}
         <div class="col-auto">
           <label class="form-label" for="driver-{{ drv.key }}">{{ drv.label }}</label>
-          <select id="driver-{{ drv.key }}"
-                  class="form-select driver-filter"
-                  data-key="{{ drv.key }}">
+          <select id="driver-{{ drv.key }}" class="form-select driver-filter" data-key="{{ drv.key }}">
             <option value="">{{ drv.label }}</option>
             {% for opt in drv.choices %}
               <option value="{{ opt.id }}">{{ opt.name }}</option>
@@ -36,81 +35,129 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       <button id="add-row-btn" class="btn btn-sm btn-outline-primary">Add Row</button>
     </div>
   </div>
+
   <div id="planning-grid"></div>
 </div>
 {% endblock %}
+
 {% block extra_js %}
-<link href="https://cdn.jsdelivr.net/npm/tabulator-tables@6.2.1/dist/css/tabulator.min.css" rel="stylesheet"/>
-<script src="https://cdn.jsdelivr.net/npm/tabulator-tables@6.2.1/dist/js/tabulator.min.js"></script>
+<link href="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3.1/dist/css/tabulator.min.css" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3.1/dist/js/tabulator.min.js"></script>
 <script>
-(function(){
-  // Context variables
-  const apiURL    = "{{ api_url }}";
-  const updateURL = "{{ update_url }}";
+(function () {
+  // ---- Context from server ----
+  const apiURL    = "{{ api_url }}";     // should point to /api/bps/grid/
+  const updateURL = "{{ update_url }}";  // /api/bps/grid-update/
   const layoutId  = {{ layout_year.pk }};
   const buckets   = {{ buckets_js|safe }};
   const kfCodes   = {{ kf_codes|safe }};
-  const drivers   = {{ drivers_js|safe }};
-  const services  = {{ services_js|safe }};
-  const orgUnits  = {{ org_units_js|safe }};
+  const drivers   = {{ drivers_js|safe }};   // [{ key, label, choices:[{id,name}] }, ...]
+  const services  = {{ services_js|safe }};  // [{code,name}]
+  const orgUnits  = {{ org_units_js|safe }}; // [{code,name}]
 
-  // Build lookup maps
-  const orgUnitMap = orgUnits.reduce((acc, o) => (acc[o.code] = o.name, acc), {});
-  const serviceMap = services.reduce((acc, s) => (acc[s.code] = s.name, acc), {});
+  // Map bucket code => first Period.code (e.g., "01" for Jan or Q1→01)
+  const bucketFirstPeriodMap = Object.fromEntries(
+    buckets.map(b => [String(b.code), (b.periods && b.periods[0]) || String(b.code)])
+  );
+  const bucketCodes = new Set(buckets.map(b => String(b.code)));
+  const kfSet = new Set(kfCodes.map(String));
+
+  // ---- Lookups (value -> label) for list editor/filters ----
+  const toMap = (rows, valueKey, labelKey) =>
+    rows.reduce((acc, r) => (acc[r[valueKey]] = r[labelKey], acc), {});
+
+  const orgUnitMap = toMap(orgUnits, "code", "name");
+  const serviceMap = toMap(services, "code", "name");
+
   const driverMaps = {};
   drivers.forEach(d => {
-    driverMaps[d.key] = d.choices.reduce((acc, opt) => (acc[opt.id] = opt.name, acc), {});
+    driverMaps[d.key] = toMap(d.choices, "id", "name"); // PK -> name
   });
 
-  // Blank row template
+  // ---- Tabulator "list" editor params (autocomplete) ----
+  const listEditorParams = (valuesMap) => ({
+    values: valuesMap,
+    autocomplete: true,
+    listOnEmpty: true,
+    allowEmpty: true,
+    clearable: true,
+    sortValuesList: "asc",
+    verticalNavigation: "table",
+  });
+
+  const listHeaderFilterParams = (valuesMap) => ({
+    values: valuesMap,
+    autocomplete: true,
+    listOnEmpty: true,
+    clearable: true,
+  });
+
+  // ---- Blank row template: store *codes* in *_code fields ----
   const blankRow = {
-    org_unit: null,
-    service:  null,
-    ...drivers.reduce((acc, d) => ({...acc, [d.key]: null}), {}),
-    ...buckets.flatMap(b =>
-      kfCodes.map(kf => ({ [`${b.code}_${kf}`]: null }))
-    ).reduce((acc, obj) => ({...acc, ...obj}), {}),
+    org_unit_code: null,
+    service_code:  null,
+    ...drivers.reduce((acc, d) => ({ ...acc, [`${d.key}_code`]: null }), {}),
+    ...buckets
+      .flatMap(b => kfCodes.map(kf => ({ [`${b.code}_${kf}`]: null })))
+      .reduce((acc, obj) => ({ ...acc, ...obj }), {}),
   };
 
-  // Define columns
-  const columns = [
-    { title: "Org Unit", field: "org_unit", frozen: true, width: 150,
-      editor: "select", editorParams: { values: orgUnitMap },
-      formatter: "lookup", formatterParams: orgUnitMap,
-      headerFilter: "select", headerFilterParams: { values: orgUnitMap },
+  // ---- Columns: dimensions first (editable), then numeric KFs ----
+  const dimCols = [
+    {
+      title: "Org Unit",
+      field: "org_unit_code",
+      width: 220,
+      frozen: true,
+      editor: "list",
+      editorParams: listEditorParams(orgUnitMap),
+      formatter: "lookup",
+      formatterParams: orgUnitMap,
+      headerFilter: "list",
+      headerFilterParams: listHeaderFilterParams(orgUnitMap),
+      headerTooltip: "Type to search Org Units",
     },
-    { title: "Service", field: "service", width: 150,
-      editor: "select", editorParams: { values: serviceMap },
-      formatter: "lookup", formatterParams: serviceMap,
-      headerFilter: "select", headerFilterParams: { values: serviceMap },
+    {
+      title: "Service",
+      field: "service_code",
+      width: 220,
+      editor: "list",
+      editorParams: listEditorParams(serviceMap),
+      formatter: "lookup",
+      formatterParams: serviceMap,
+      headerFilter: "list",
+      headerFilterParams: listHeaderFilterParams(serviceMap),
+      headerTooltip: "Type to search Services",
     },
     ...drivers
-      .filter(d => d.key !== 'orgunit' && d.key !== 'service')
+      .filter(d => d.key !== "orgunit" && d.key !== "service")
       .map(d => ({
         title: d.label,
-        field: d.key,
-        width: 120,
-        editor: "select",
-        editorParams: { values: driverMaps[d.key] },
+        field: `${d.key}_code`,
+        width: 180,
+        editor: "list",
+        editorParams: listEditorParams(driverMaps[d.key]),
         formatter: "lookup",
         formatterParams: driverMaps[d.key],
-        headerFilter: "select",
-        headerFilterParams: { values: driverMaps[d.key] },
+        headerFilter: "list",
+        headerFilterParams: listHeaderFilterParams(driverMaps[d.key]),
+        headerTooltip: `Type to search ${d.label}`,
       })),
-    ...buckets.flatMap(b =>
-      kfCodes.map(kf => ({
-        title: `${b.name} ${kf}`,
-        field: `${b.code}_${kf}`,
-        editor: "number",
-        hozAlign: "right",
-        bottomCalc: "sum",
-        formatter: "money",
-        formatterParams: { symbol: "", precision: 2 }
-      }))
-    ),
   ];
 
-  // Initialize Tabulator
+  const valueCols = buckets.flatMap(b =>
+    kfCodes.map(kf => ({
+      title: `${b.name} ${kf}`,
+      field: `${b.code}_${kf}`,        // e.g. "01_MAN_MONTH"
+      editor: "number",
+      hozAlign: "right",
+      bottomCalc: "sum",
+      formatter: "money",
+      formatterParams: { symbol: "", precision: 2 },
+    }))
+  );
+
+  // ---- Build table ----
   const table = new Tabulator("#planning-grid", {
     layout: "fitColumns",
     pagination: "local",
@@ -118,59 +165,211 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     ajaxURL: apiURL,
     ajaxConfig: { credentials: "include" },
     ajaxParams: { layout: layoutId },
-    ajaxResponse: (_url, _params, res) => res.data || res,
-    columns: columns,
-    history: true,
-  });
-
-  // Add row handler
-  document.getElementById("add-row-btn").addEventListener("click", () => {
-    table.addRow({...blankRow}, true)
-      .then(row => row.getCell("org_unit").edit())
-      .catch(console.error);
-  });
-
-  // Save changes handler
-  document.getElementById("btn-save").addEventListener("click", () => {
-    const actions = table.getHistory().getActions();
-    if (!actions.length) return alert("No changes to save.");
-    const updates = [];
-    table.getRows().forEach(row => {
-      if (row.isEdited() || row.isNew()) {
-        const data = row.getData();
-        const base = { layout: layoutId, org_unit: data.org_unit, service: data.service };
-        drivers.forEach(d => base[d.key] = data[d.key]);
-        row.getCells().forEach(cell => {
-          if (!cell.isEdited()) return;
-          const field = cell.getField();
-          if (!field.includes("_")) return;
-          const [period, kf] = field.split("_");
-          updates.push({ ...base, period, key_figure: kf, value: cell.getValue() });
+    // Enhance rows with _orig_* copies so we can detect dimension moves later
+    ajaxResponse: (_url, _params, res) => {
+      return (Array.isArray(res) ? res : []).map(r => {
+        const out = { ...r };
+        out._orig_org_unit_code = r.org_unit_code ?? null;
+        out._orig_service_code  = r.service_code  ?? null;
+        drivers.forEach(d => {
+          out[`_orig_${d.key}_code`] = r[`${d.key}_code`] ?? null;
         });
+        return out;
+      });
+    },
+    columns: [...dimCols, ...valueCols],
+    validationMode: "highlight",
+  });
+
+  // ---- Add Row: open first dimension editor immediately ----
+  document.getElementById("add-row-btn").addEventListener("click", async () => {
+    try {
+      const row = await table.addRow({ ...blankRow }, true);
+      row.getCell("org_unit_code").edit();
+    } catch (e) {
+      console.error(e);
+    }
+  });
+
+  // Helper: a field is a VALUE field iff it's `${bucket}_${kf}`
+  function isValueField(field) {
+    if (typeof field !== "string") return false;
+    if (field.endsWith("_code")) return false; // dimensions
+    const i = field.indexOf("_");
+    if (i < 0) return false;
+    const bucket = field.slice(0, i);
+    const kf = field.slice(i + 1); // MAN_MONTH etc.
+    return bucketCodes.has(bucket) && kfSet.has(kf);
+  }
+
+  // Utilities to push deduped updates
+  function updatesKey(base, period, kf) {
+    const dims = [base.org_unit, base.service];
+    // keep driver order stable
+    drivers.forEach(dr => dims.push(base[dr.key] ?? null));
+    return JSON.stringify([period, kf, ...dims]);
+  }
+  function pushUpdate(map, base, period, kf, value) {
+    const key = updatesKey(base, period, kf);
+    if (!map.has(key)) {
+      map.set(key, { layout: layoutId, ...base, period, key_figure: kf, value });
+    } else {
+      // last write wins (should be identical anyway)
+      map.get(key).value = value;
+    }
+  }
+
+  // ---- Save Changes ----
+  document.getElementById("btn-save").addEventListener("click", () => {
+    const editedCells = table.getEditedCells();
+    const valueCells = editedCells.filter(c => isValueField(c.getField()));
+
+    const updatesMap = new Map();
+    const rowsMissingDims = new Set();
+
+    // 1) Handle edited numeric cells directly
+    for (const cell of valueCells) {
+      const row = cell.getRow();
+      const d = row.getData();
+
+      if (!d.org_unit_code) {
+        rowsMissingDims.add(row.getPosition(true));
+        continue;
       }
-    });
-    if (!updates.length) return alert("No changes to save.");
+
+      const field = cell.getField();
+      const us = field.indexOf("_");
+      const bucketCode = field.slice(0, us);
+      const kf = field.slice(us + 1);
+      const period = bucketFirstPeriodMap[bucketCode] || bucketCode;
+
+      const baseNew = { org_unit: d.org_unit_code, service: d.service_code || null };
+      drivers.forEach(dr => (baseNew[dr.key] = d[`${dr.key}_code`] ?? null));
+
+      pushUpdate(updatesMap, baseNew, period, kf, cell.getValue());
+    }
+
+    // 2) Handle dimension moves (even if no numeric cells were edited)
+    for (const row of table.getRows()) {
+      const d = row.getData();
+
+      const changed =
+        d.org_unit_code !== d._orig_org_unit_code ||
+        d.service_code  !== d._orig_service_code  ||
+        drivers.some(dr => d[`${dr.key}_code`] !== d[`_orig_${dr.key}_code`]);
+
+      if (!changed) continue;
+
+      if (!d.org_unit_code) {
+        rowsMissingDims.add(row.getPosition(true));
+        continue;
+      }
+
+      const baseOld = {
+        org_unit: d._orig_org_unit_code,
+        service: d._orig_service_code || null,
+      };
+      const baseNew = {
+        org_unit: d.org_unit_code,
+        service: d.service_code || null,
+      };
+      drivers.forEach(dr => {
+        baseOld[dr.key] = d[`_orig_${dr.key}_code`] ?? null;
+        baseNew[dr.key] = d[`${dr.key}_code`] ?? null;
+      });
+
+      // For every value field present on the row, "move" it:
+      // write 0 to old slice, write current value to new slice.
+      for (const b of buckets) {
+        for (const kf of kfCodes) {
+          const field = `${b.code}_${kf}`;
+          if (!Object.prototype.hasOwnProperty.call(d, field)) continue;
+          const val = d[field];
+          if (val === null || val === "" || typeof val === "undefined") continue;
+
+          const period = bucketFirstPeriodMap[String(b.code)] || String(b.code);
+
+          // clear old
+          if (baseOld.org_unit) {
+            pushUpdate(updatesMap, baseOld, period, kf, 0);
+          }
+          // set new
+          pushUpdate(updatesMap, baseNew, period, kf, val);
+        }
+      }
+    }
+
+    const updates = Array.from(updatesMap.values());
+
+    if (!updates.length) {
+      if (rowsMissingDims.size) {
+        alert("Fill Org Unit (and other dimensions) before saving.\nRows: " + [...rowsMissingDims].join(", "));
+      } else if (!valueCells.length) {
+        alert("No changes to save.");
+      } else {
+        alert("No valid changes to save.");
+      }
+      return;
+    }
+
     fetch(updateURL, {
       method: "PATCH",
       credentials: "include",
-      headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },
-      body: JSON.stringify({ layout: layoutId, updates }),
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": getCookie("csrftoken"),
+      },
+      body: JSON.stringify({ layout: layoutId, delete_zeros: true, delete_blanks: true, updates }),
     })
-    .then(res => res.ok ? res.json() : res.json().then(err => Promise.reject(err)))
-    .then(() => {
-      alert("All changes saved successfully.");
-      table.clearHistory();
-      table.replaceData(apiURL, { layout: layoutId }, "get");
-    })
-    .catch(err => { console.error(err); alert("Save failed: " + (err.detail || JSON.stringify(err))); });
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        const hasErrors = Array.isArray(data.errors) && data.errors.length > 0;
+
+        if (res.status === 207 || hasErrors) {
+          (data.errors || []).forEach(e => {
+            const u = e.update || {};
+            const r = findRowByUpdate(u);
+            if (r) r.getElement().style.backgroundColor = "rgba(220,53,69,.12)";
+          });
+          const msg = [
+            "Some updates failed:",
+            ...(data.errors || []).slice(0, 10).map(e => `• ${e.error}`),
+            (data.errors || []).length > 10 ? `…and ${data.errors.length - 10} more` : ""
+          ].filter(Boolean).join("\n");
+          alert(msg || "Some updates failed.");
+          table.replaceData();
+          throw new Error("Partial failure");
+        }
+
+        if (!res.ok) throw new Error(data.detail || "Save failed");
+
+        alert(`Saved. Updated ${data.updated ?? updates.length} cells.`);
+        table.replaceData();
+      })
+      .catch((err) => {
+        console.error(err);
+      });
+
+    function findRowByUpdate(upd) {
+      const rows = table.getRows();
+      for (const row of rows) {
+        const d = row.getData();
+        const dimsMatch =
+          d.org_unit_code === upd.org_unit &&
+          (d.service_code || null) === (upd.service || null) &&
+          drivers.every(dr => (d[`${dr.key}_code`] ?? null) === (upd[dr.key] ?? null));
+        if (dimsMatch) return row;
+      }
+      return null;
+    }
   });
 
-  // CSRF helper
+  // ---- CSRF helper ----
   function getCookie(name) {
     let v = null;
-    document.cookie.split(';').forEach(c => {
+    document.cookie.split(";").forEach(c => {
       c = c.trim();
-      if (c.startsWith(name + '=')) v = decodeURIComponent(c.slice(name.length + 1));
+      if (c.startsWith(name + "=")) v = decodeURIComponent(c.slice(name.length + 1));
     });
     return v;
   }

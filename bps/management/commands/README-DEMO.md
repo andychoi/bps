@@ -1,5 +1,15 @@
 # Input Context for Demo Data Generation
 
+## How to run
+```
+python manage.py bps_demo_0clean
+python manage.py bps_demo_1master
+python manage.py bps_demo_2env
+# Optional: limit to a year, e.g. 2025 or 2026
+python manage.py bps_demo_3plan --year 2025
+python manage.py bps_demo_3plan --year 2026
+```
+
 ## 1. Master & Reference Data
 
 1. **Skills & Seniorities**
