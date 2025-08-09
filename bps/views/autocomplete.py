@@ -15,8 +15,28 @@ from ..models.models import (
     CBU,
     UnitOfMeasure,
     PlanningLayoutYear,
+    KeyFigure
 )
+from ..models.models_dimension import Service, Version
 
+class ServiceAutocomplete(Select2QuerySetView):
+    def get_queryset(self):
+        qs = Service.objects.filter(is_active=True)
+        if self.q: qs = qs.filter(Q(code__icontains=self.q)|Q(name__icontains=self.q))
+        return qs
+
+class KeyFigureAutocomplete(Select2QuerySetView):
+    def get_queryset(self):
+        qs = KeyFigure.objects.all()
+        if self.q: qs = qs.filter(Q(code__icontains=self.q)|Q(name__icontains=self.q))
+        return qs
+
+class VersionAutocomplete(Select2QuerySetView):
+    def get_queryset(self):
+        qs = Version.objects.all()
+        if self.q: qs = qs.filter(Q(code__icontains=self.q)|Q(name__icontains=self.q))
+        return qs
+    
 class LayoutAutocomplete(Select2QuerySetView):
     def get_queryset(self):
         qs = PlanningLayout.objects.all()

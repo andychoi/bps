@@ -1804,22 +1804,27 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       Manual Planning – {{ layout_year.layout.name }}
       <small class="text-muted">({{ layout_year.year.code }}/{{ layout_year.version.code }})</small>
     </h2>
-    <button class="btn btn-primary" id="btn-save">Save Changes</button>
+    <div>
+      <button class="btn btn-primary me-2" id="btn-save">Save Changes</button>
+      <a class="btn btn-outline-secondary" href="{% url 'admin:bps_planninglayout_change' layout_year.layout.pk %}">Edit Layout</a>
+    </div>
   </div>
   <div class="row mb-2">
-    {# Use the new context variable specifically for this loop #}
+    {# Only include dynamic drivers beyond org_unit and service to avoid duplication #}
     {% for drv in drivers_for_template %}
-      <div class="col-auto">
-        <label class="form-label" for="driver-{{ drv.key }}">{{ drv.label }}</label>
-        <select id="driver-{{ drv.key }}"
-                class="form-select driver-filter"
-                data-key="{{ drv.key }}">
-          <option value="">{{ drv.label }}</option>
-          {% for opt in drv.choices %}
-            <option value="{{ opt.id }}">{{ opt.name }}</option>
-          {% endfor %}
-        </select>
-      </div>
+      {% if drv.key != 'orgunit' and drv.key != 'service' %}
+        <div class="col-auto">
+          <label class="form-label" for="driver-{{ drv.key }}">{{ drv.label }}</label>
+          <select id="driver-{{ drv.key }}"
+                  class="form-select driver-filter"
+                  data-key="{{ drv.key }}">
+            <option value="">{{ drv.label }}</option>
+            {% for opt in drv.choices %}
+              <option value="{{ opt.id }}">{{ opt.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      {% endif %}
     {% endfor %}
     <div id="manual-planning-toolbar" class="col-auto align-self-end mb-2">
       <button id="add-row-btn" class="btn btn-sm btn-outline-primary">Add Row</button>
@@ -1833,63 +1838,56 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
 <script src="https://cdn.jsdelivr.net/npm/tabulator-tables@6.2.1/dist/js/tabulator.min.js"></script>
 <script>
 (function(){
-  // --- Context from Django ---
+  // Context variables
   const apiURL    = "{{ api_url }}";
   const updateURL = "{{ update_url }}";
   const layoutId  = {{ layout_year.pk }};
   const buckets   = {{ buckets_js|safe }};
   const kfCodes   = {{ kf_codes|safe }};
-  // Use the new JSON-serialized context variables
-  const drivers   = {{ drivers_js|safe }};   // [{key,label,choices:[{id,name}]}]
-  const services  = {{ services_js|safe }};  // [{code,name}]
-  const orgUnits  = {{ org_units_js|safe }}; // [{code,name}]
-  // --- 1) Build lookup maps once (key: name) ---
-  // Tabulator select editor expects an object where keys are the cell values
-  // and values are the display text.
+  const drivers   = {{ drivers_js|safe }};
+  const services  = {{ services_js|safe }};
+  const orgUnits  = {{ org_units_js|safe }};
+  // Build lookup maps
   const orgUnitMap = orgUnits.reduce((acc, o) => (acc[o.code] = o.name, acc), {});
   const serviceMap = services.reduce((acc, s) => (acc[s.code] = s.name, acc), {});
   const driverMaps = {};
   drivers.forEach(d => {
-    // Here choices have 'id' and 'name'
-    const m = d.choices.reduce((acc, opt) => (acc[opt.id] = opt.name, acc), {});
-    driverMaps[d.key] = m;
+    driverMaps[d.key] = d.choices.reduce((acc, opt) => (acc[opt.id] = opt.name, acc), {});
   });
-  // --- 2) Blank‐row template for the "Add Row" button ---
+  // Blank row template
   const blankRow = {
-    org_unit: null, // Start with null so placeholder can show
+    org_unit: null,
     service:  null,
-    // initialize each dynamic driver to null
     ...drivers.reduce((acc, d) => ({...acc, [d.key]: null}), {}),
-    // initialize every period × KF to null
     ...buckets.flatMap(b =>
       kfCodes.map(kf => ({ [`${b.code}_${kf}`]: null }))
     ).reduce((acc, obj) => ({...acc, ...obj}), {}),
   };
-  // --- 3) Define columns (FIXED: no duplicates) ---
+  // Define columns
   const columns = [
-    // Org Unit (fixed column)
-    {
-      title: "Org Unit", field: "org_unit", frozen: true, width: 150,
-      editor: "select", editorParams: { values: orgUnitMap, placeholder: "Select Org Unit..." },
+    { title: "Org Unit", field: "org_unit", frozen: true, width: 150,
+      editor: "select", editorParams: { values: orgUnitMap },
       formatter: "lookup", formatterParams: orgUnitMap,
       headerFilter: "select", headerFilterParams: { values: orgUnitMap },
     },
-    // Service (fixed column)
-    {
-      title: "Service", field: "service", width: 150,
-      editor: "select", editorParams: { values: serviceMap, placeholder: "Select Service..." },
+    { title: "Service", field: "service", width: 150,
+      editor: "select", editorParams: { values: serviceMap },
       formatter: "lookup", formatterParams: serviceMap,
       headerFilter: "select", headerFilterParams: { values: serviceMap },
     },
-    // Dynamic JSON drivers (Skill, Position, etc.)
-    // FIX: We now use the 'drivers' JS variable which does NOT include service/org_unit
-    ...drivers.map(d => ({
-      title: d.label, field: d.key, width: 120,
-      editor: "select", editorParams: { values: driverMaps[d.key], placeholder: `Select ${d.label}...` },
-      formatter: "lookup", formatterParams: driverMaps[d.key],
-      headerFilter: "select", headerFilterParams: { values: driverMaps[d.key] },
-    })),
-    // Period × KeyFigure columns
+    ...drivers
+      .filter(d => d.key !== 'orgunit' && d.key !== 'service')
+      .map(d => ({
+        title: d.label,
+        field: d.key,
+        width: 120,
+        editor: "select",
+        editorParams: { values: driverMaps[d.key] },
+        formatter: "lookup",
+        formatterParams: driverMaps[d.key],
+        headerFilter: "select",
+        headerFilterParams: { values: driverMaps[d.key] },
+      })),
     ...buckets.flatMap(b =>
       kfCodes.map(kf => ({
         title: `${b.name} ${kf}`,
@@ -1897,12 +1895,12 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
         editor: "number",
         hozAlign: "right",
         bottomCalc: "sum",
-        formatter: "money", // Or another appropriate numeric formatter
+        formatter: "money",
         formatterParams: { symbol: "", precision: 2 }
       }))
     ),
   ];
-  // --- 4) Initialize Tabulator ---
+  // Initialize Tabulator
   const table = new Tabulator("#planning-grid", {
     layout: "fitColumns",
     pagination: "local",
@@ -1910,95 +1908,58 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     ajaxURL: apiURL,
     ajaxConfig: { credentials: "include" },
     ajaxParams: { layout: layoutId },
-    // Ensure your API returns an array of data objects, e.g. [ {org_unit:"OU1", service:"SVC1",...}, ... ]
-    ajaxResponse: (_url, _params, res) => res.data || res, // Safely handle wrapped API responses
+    ajaxResponse: (_url, _params, res) => res.data || res,
     columns: columns,
-    history: true, // Enable undo/redo (Ctrl+Z) which is useful
+    history: true,
   });
-  // --- 5) Add Row (FIXED: This will now work) ---
+  // Add row handler
   document.getElementById("add-row-btn").addEventListener("click", () => {
-    // Add a new row to the top of the table using our blank template
-    table.addRow({ ...blankRow }, true)
-      .then(rowComponent => {
-        // Automatically open the editor on the first cell for a better UX
-        rowComponent.getCell("org_unit").edit();
-      })
-      .catch(err => console.error("Add row failed:", err)); // Error should be gone
+    table.addRow({...blankRow}, true)
+      .then(row => row.getCell("org_unit").edit())
+      .catch(console.error);
   });
-  // --- 6) Save Changes (Bulk Update Logic) ---
-  // Using Tabulator's history module is often safer
+  // Save changes handler
   document.getElementById("btn-save").addEventListener("click", () => {
-    const editedCells = table.getHistory().getActions();
-    if (!editedCells.length) {
-        alert("No changes to save.");
-        return;
-    }
-    // This logic is more complex but more efficient as it only sends deltas.
-    // Your existing logic of sending everything is fine too, so I will leave it,
-    // but note that using the history/edited data is a good practice.
+    const actions = table.getHistory().getActions();
+    if (!actions.length) return alert("No changes to save.");
     const updates = [];
-    const editedOrAddedRows = table.getRows().filter(r => r.isEdited() || r.isNew());
-    editedOrAddedRows.forEach(row => {
-        const rowData = row.getData();
-        // Your existing logic to structure updates is good.
-        // Let's adapt it slightly.
-        const baseDims = {
-             layout:     layoutId,
-             org_unit:   rowData.org_unit,
-             service:    rowData.service,
-        };
-        drivers.forEach(d => baseDims[d.key] = rowData[d.key]);
-        const changedCells = row.getCells().filter(c => c.isEdited());
-        changedCells.forEach(cell => {
-            const field = cell.getField();
-            if (!field.includes("_")) return; // Only process numeric key figure cells
-            const [period, kf] = field.split("_");
-            updates.push({
-                ...baseDims,
-                period:      period,
-                key_figure:  kf,
-                value:       cell.getValue(),
-            });
+    table.getRows().forEach(row => {
+      if (row.isEdited() || row.isNew()) {
+        const data = row.getData();
+        const base = { layout: layoutId, org_unit: data.org_unit, service: data.service };
+        drivers.forEach(d => base[d.key] = data[d.key]);
+        row.getCells().forEach(cell => {
+          if (!cell.isEdited()) return;
+          const field = cell.getField();
+          if (!field.includes("_")) return;
+          const [period, kf] = field.split("_");
+          updates.push({ ...base, period, key_figure: kf, value: cell.getValue() });
         });
+      }
     });
-     if (!updates.length) return alert("No changes to save.");
-     fetch(updateURL, {
-       method: "PATCH",
-       credentials: "include",
-       headers: {
-         "Content-Type": "application/json",
-         "X-CSRFToken": getCookie("csrftoken"),
-       },
-       body: JSON.stringify({ layout: layoutId, updates: updates }),
-     })
-     .then(res => {
-        if (!res.ok) return res.json().then(err => Promise.reject(err));
-        return res.json();
-     })
-     .then(data => {
-        alert("All changes saved successfully.");
-        table.clearHistory(); // Clear history after successful save
-        table.replaceData(); // Reload data from server
-     })
-     .catch(err => {
-        console.error("Save failed:", err);
-        alert("Save failed: " + (err.detail || JSON.stringify(err)));
-     });
+    if (!updates.length) return alert("No changes to save.");
+    fetch(updateURL, {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },
+      body: JSON.stringify({ layout: layoutId, updates }),
+    })
+    .then(res => res.ok ? res.json() : res.json().then(err => Promise.reject(err)))
+    .then(() => {
+      alert("All changes saved successfully.");
+      table.clearHistory();
+      table.replaceData();
+    })
+    .catch(err => { console.error(err); alert("Save failed: " + (err.detail || JSON.stringify(err))); });
   });
-  // CSRF helper function
+  // CSRF helper
   function getCookie(name) {
-    let cookieValue = null;
-    if (document.cookie && document.cookie !== '') {
-        const cookies = document.cookie.split(';');
-        for (let i = 0; i < cookies.length; i++) {
-            const cookie = cookies[i].trim();
-            if (cookie.substring(0, name.length + 1) === (name + '=')) {
-                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
-                break;
-            }
-        }
-    }
-    return cookieValue;
+    let v = null;
+    document.cookie.split(';').forEach(c => {
+      c = c.trim();
+      if (c.startsWith(name + '=')) v = decodeURIComponent(c.slice(name.length + 1));
+    });
+    return v;
   }
 })();
 </script>

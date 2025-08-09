@@ -160,7 +160,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     .then(() => {
       alert("All changes saved successfully.");
       table.clearHistory();
-      table.replaceData();
+      table.replaceData(apiURL, { layout: layoutId }, "get");
     })
     .catch(err => { console.error(err); alert("Save failed: " + (err.detail || JSON.stringify(err))); });
   });

@@ -120,17 +120,20 @@ class PeriodGrouping(models.Model):
         unique_together = ('layout_year','months_per_bucket')
 
     def buckets(self):
-        # grab the one global list of 12 periods, ordered Jan→Dec
         from bps.models.models import Period
-        qs = Period.objects.order_by('order')
-        months = list(qs)
-        size   = self.months_per_bucket
+        months = list(Period.objects.order_by('order'))
+        size = self.months_per_bucket
         buckets = []
         for i in range(0, 12, size):
             group = months[i:i+size]
-            idx   = (i//size)+1
-            code  = f"{self.label_prefix}{idx}"
-            buckets.append({'code':code, 'name':code, 'periods':group})
+            if size == 1:  # monthly -> use real period codes
+                code = group[0].code        # e.g. "01"
+                name = group[0].name        # e.g. "Jan"
+            else:
+                idx = (i // size) + 1
+                code = f"{self.label_prefix}{idx}"  # e.g. "Q1"
+                name = code
+            buckets.append({'code': code, 'name': name, 'periods': group})
         return buckets
 
 

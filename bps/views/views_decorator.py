@@ -1,6 +1,6 @@
 # views.decorator.py
 from rest_framework.response import Response
-from .models.models import PlanningSession
+from ..models.models import PlanningSession
 
 # pseudo‐decorator
 def require_stage(stage_code):

@@ -5,7 +5,7 @@
 <script>
 function resetData() {
   if (!confirm("This will zero out all existing values before saving. Continue?")) return;
-  fetch("/api/bps_planning_grid_update", {
+  fetch("{% url 'bps_api:planning_grid_update' %}", {
     method: "PATCH",
     headers: {
       "Content-Type":"application/json",

@@ -12,29 +12,20 @@
   <h2>Facts</h2>
   <table class="table table-striped">
     <thead>
-      <tr>
-        <th>Period</th>
-        <th>Qty</th>
-        <th>UoM</th>
-        <th>Amount</th>
-        <th>UoM</th>
-        <th>Other</th>
-        <th>Value</th>
-      </tr>
+      <tr><th>Period</th><th>Key Figure</th><th>Value</th><th>UoM</th><th>Ref Value</th><th>Ref UoM</th></tr>
     </thead>
     <tbody>
       {% for f in facts %}
-      <tr>
-        <td>{{ f.period }}</td>
-        <td>{{ f.quantity }}</td>
-        <td>{{ f.quantity_uom }}</td>
-        <td>{{ f.amount }}</td>
-        <td>{{ f.amount_uom }}</td>
-        <td>{{ f.other_key_figure }}</td>
-        <td>{{ f.other_value }}</td>
-      </tr>
+        <tr>
+          <td>{{ f.period.code }}</td>
+          <td>{{ f.key_figure.code }}</td>
+          <td>{{ f.value }}</td>
+          <td>{{ f.uom.code|default:"–" }}</td>
+          <td>{{ f.ref_value }}</td>
+          <td>{{ f.ref_uom.code|default:"–" }}</td>
+        </tr>
       {% empty %}
-      <tr><td colspan="7">No facts recorded yet.</td></tr>
+        <tr><td colspan="6">No facts recorded yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>

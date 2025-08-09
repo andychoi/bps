@@ -112,7 +112,8 @@ class PlanningGridAPIView(APIView):
                     "org_unit": f.org_unit.name,
                     "service":  f.service.name if f.service else None,
                 })
-                col = f"M{f.period.code}_{f.key_figure.code}"
+                # col = f"M{f.period.code}_{f.key_figure.code}" #drop M
+                col = f"{f.period.code}_{f.key_figure.code}"
                 cell = row.setdefault(col, {})
                 cell[tag] = float(f.value)
 

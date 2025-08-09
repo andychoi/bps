@@ -19,7 +19,7 @@
   document.getElementById('select-form').addEventListener('submit', e=>{
     e.preventDefault();
     let [l,y,v] = document.getElementById('layout').value.split('|');
-    window.location.href = `{% url 'bps:manual-planning' 0 0 0 %}`
+    window.location.href = `{% url 'bps:manual_planning' 0 0 0 %}`
       .replace('/0/0/0/', `/${l}/${y}/${v}/`);
   });
 </script>

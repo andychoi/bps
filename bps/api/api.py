@@ -1,6 +1,7 @@
 from decimal import Decimal
 from django.shortcuts import get_object_or_404
 from django.db import transaction
+from rest_framework.permissions import IsAuthenticated
 
 from rest_framework import serializers, status
 from rest_framework.views import APIView
@@ -28,6 +29,8 @@ class PlanningGridView(APIView):
       - <each JSON row-dimension> + <that>_code
       - <period>_<key_figure> columns
     """
+    permission_classes = [IsAuthenticated]
+    
     def get(self, request):
         ly_pk = request.query_params.get('layout')
         ly    = get_object_or_404(PlanningLayoutYear, pk=ly_pk)
@@ -86,6 +89,7 @@ class PlanningGridBulkUpdateView(APIView):
     Same as before; will pick up any JSON dims you include in the payload.
     """
     http_method_names = ["get","post","patch","options"]
+    permission_classes = [IsAuthenticated]
 
     @transaction.atomic
     def post(self, request, *args, **kwargs):

@@ -8,6 +8,7 @@ from bps.models.models import (
     PlanningFact, Formula, Constant, SubFormula,
     FormulaRun, FormulaRunEntry, ReferenceData, Period
 )
+from bps.models.models import KeyFigure, DataRequest
 
 # Extendable aggregation functions
 _AGG_FUNCS = {
@@ -232,3 +233,38 @@ class FormulaExecutor:
             except Exception:
                 continue
         return self._aggregate_or_fetch_for_period(kf, dims, self.period)
+
+    def _replace_reference_data(self, expr: str, _dims_map) -> str:
+        # REF('RefName', filters...) -> __refdata__('RefName', {...})
+        def repl(m):
+            name = m.group(1)
+            tail = m.group(2)
+            return f"__refdata__('{name}', {{{tail}}})"
+        return self._re_refdata.sub(repl, expr)
+
+    def _get_record(self, kf_code: str, dims: dict, create: bool):
+        period = Period.objects.get(code=self.period)
+        kf     = KeyFigure.objects.get(code=kf_code)
+        # Map known dims to explicit fields; everything else -> extra_dimensions_json
+        known = {}
+        extra = {}
+        for k, inst in dims.items():
+            if k in ("orgunit", "org_unit"):   known["org_unit"] = inst
+            elif k in ("service",):            known["service"]  = inst
+            elif k in ("account",):            known["account"]  = inst
+            else:                              extra[k] = inst.pk
+        base = dict(session=self.session, period=period, key_figure=kf, **known)
+        fact = PlanningFact.objects.filter(**base, extra_dimensions_json=extra).first()
+        if fact:
+            return fact
+        if not create:
+            # Return a synthetic, unsaved object for preview
+            return PlanningFact(**base, extra_dimensions_json=extra, value=Decimal("0"))
+        return PlanningFact.objects.create(
+            request=self.session.requests.order_by('-created_at').first() or
+                    DataRequest.objects.create(session=self.session, description="Formula write"),
+            version=self.session.layout_year.version,
+            year=self.session.layout_year.year,
+            uom=None, ref_uom=None,
+            extra_dimensions_json=extra, **base
+        )

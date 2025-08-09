@@ -20,6 +20,7 @@ from .views.autocomplete import (
     OrgUnitAutocomplete, CBUAutocomplete,
     AccountAutocomplete, InternalOrderAutocomplete,
     UnitOfMeasureAutocomplete, LayoutYearAutocomplete,
+    ServiceAutocomplete, KeyFigureAutocomplete, VersionAutocomplete,
 )
 
 app_name = "bps"
@@ -73,12 +74,6 @@ urlpatterns = [
     # Global variables
     path("variables/",      VariableListView.as_view(),      name="variable_list"),
 
-    # Planning sessions
-    path("sessions/",       PlanningSessionListView.as_view(),   name="session_list"),
-    path("sessions/<int:session_id>/advance/",
-         AdvanceStageView.as_view(),                            name="advance_stage"),
-    path("sessions/<int:pk>/", PlanningSessionDetailView.as_view(), name="session_detail"),
-
     # Autocomplete endpoints
     path("autocomplete/layout/",      LayoutAutocomplete.as_view(),      name="layout-autocomplete"),
     path("autocomplete/contenttype/", ContentTypeAutocomplete.as_view(), name="contenttype-autocomplete"),
@@ -90,5 +85,7 @@ urlpatterns = [
     path("autocomplete/internalorder/", InternalOrderAutocomplete.as_view(), name="internalorder-autocomplete"),
     path("autocomplete/uom/",         UnitOfMeasureAutocomplete.as_view(), name="uom-autocomplete"),
     path("autocomplete/layoutyear/",  LayoutYearAutocomplete.as_view(),   name="layoutyear-autocomplete"),
-
+    path("autocomplete/service/",      ServiceAutocomplete.as_view(),    name="service-autocomplete"),
+    path("autocomplete/keyfigure/",    KeyFigureAutocomplete.as_view(),  name="keyfigure-autocomplete"),
+    path("autocomplete/version/",      VersionAutocomplete.as_view(),    name="version-autocomplete"),
 ]

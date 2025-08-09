@@ -14,7 +14,7 @@ from django.views.generic import (
 )
 from django.views.generic.edit import FormMixin
 from django.forms import modelform_factory
-
+from bps.models.models_workflow import ScenarioStep  
 from ..models.models import (
     PlanningScenario, PlanningSession, PlanningStage, PlanningLayoutYear,
     PlanningLayout, Year, Version, Period,
@@ -39,11 +39,12 @@ class ScenarioDashboardView(TemplateView):
         sessions = PlanningSession.objects.filter(
             scenario=scenario
         ).select_related("org_unit", "current_step__stage", "current_step__layout")
-
+        steps = ScenarioStep.objects.filter(scenario=scenario)\
+                    .select_related("stage","layout").order_by("order")
         return {
             "scenario":   scenario,
             "sessions":   sessions,
-            "steps":      scenario.steps.order_by("orderscenario__order"),  # through table
+            "steps":      steps,
             "org_units":  scenario.org_units.all(),
         }
     
@@ -205,7 +206,7 @@ class PlanningSessionDetailView(FormMixin, DetailView):
 
         # 6) compute your pivot API URL
         from django.urls import reverse
-        api_url = reverse('bps_api:bps_planning_pivot')
+        api_url = reverse('bps_api:planning_pivot')
 
         # 7) leave the old raw‐facts in case you still need them
         dr    = sess.requests.order_by('-created_at').first()
@@ -263,9 +264,10 @@ class AdvanceStepView(View):
     Move the session to the next ScenarioStep in order.
     """
     def post(self, request, session_id):
+        from bps.models.models_workflow import ScenarioStep
         sess = get_object_or_404(PlanningSession, pk=session_id)
         current_order = sess.current_step.order
-        next_step = sess.scenario.steps.filter(order__gt=current_order).order_by("order").first()
+        next_step = ScenarioStep.objects.filter(scenario=sess.scenario, order__gt=current_order).order_by("order").first()
 
         if not next_step:
             messages.warning(request, "Already at final step.")
