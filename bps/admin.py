@@ -1,6 +1,8 @@
 # bps/admin.py
 
 from django.contrib import admin
+from django import forms
+from django.contrib.contenttypes.models import ContentType
 
 from .models.models import (
     UnitOfMeasure, ConversionRate,
@@ -186,21 +188,91 @@ class LayoutYearInline(admin.TabularInline):
 @admin.register(PlanningLayout)
 class PlanningLayoutAdmin(admin.ModelAdmin):
     list_display = ('code', 'name', 'domain', 'default')
+    search_fields = ("code", "name")
     inlines      = [PlanningDimensionInline, PlanningKeyFigureInline, LayoutYearInline]
 
 class PlanningLayoutDimensionInline(admin.TabularInline):
     model = PlanningLayoutDimension
-    extra = 1
-    fields = ('content_type','is_row','is_column','order','allowed_values','filter_criteria')
+    extra = 0
+    fields = ("content_type", "is_row", "is_column", "is_header", "order", "allowed_values", "filter_criteria")
+    ordering = ("order",)
 
+class PeriodGroupingInline(admin.TabularInline):
+    model = PeriodGrouping
+    extra = 0
+    fields = ("months_per_bucket", "label_prefix")
 
+class PlanningLayoutYearAdminForm(forms.ModelForm):
+    """
+    Dynamically render a field per header dimension so admins can pick the slice.
+    Saves selected PKs back into header_dims JSON as { 'ModelName': <pk or None>, ... }.
+    """
+    class Meta:
+        model = PlanningLayoutYear
+        fields = "__all__"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        instance = self.instance if self.instance and self.instance.pk else None
+        header_cfg = (instance.header_dims or {}) if instance else {}
+
+        # For each PLD flagged as header, render a ModelChoiceField for its model
+        if instance:
+            for pld in instance.layout_dimensions.select_related("content_type").filter(is_header=True).order_by("order"):
+                Model = pld.content_type.model_class()
+                field_name = f"hdr_{pld.content_type.model}"  # e.g. hdr_orgunit, hdr_service, hdr_position …
+
+                qs = Model.objects.all()
+                # If allowed_values is provided, restrict
+                if pld.allowed_values:
+                    # allow IDs in allowed_values (ints) or codes (strings) if the model has a 'code' field
+                    if hasattr(Model, "code"):
+                        qs = qs.filter(code__in=[v for v in pld.allowed_values if isinstance(v, str)])
+                    else:
+                        qs = qs.filter(pk__in=[v for v in pld.allowed_values if isinstance(v, int)])
+
+                initial_pk = header_cfg.get(pld.content_type.model)
+                self.fields[field_name] = forms.ModelChoiceField(
+                    queryset=qs,
+                    required=False,
+                    label=f"Header: {Model._meta.verbose_name.title()}"
+                )
+                if initial_pk:
+                    try:
+                        self.fields[field_name].initial = qs.get(pk=initial_pk).pk
+                    except Model.DoesNotExist:
+                        pass  # ignore stale selection
+
+    def clean(self):
+        cleaned = super().clean()
+        # Ensure period_grouping stays present in header_dims if already used
+        return cleaned
+
+    def save(self, commit=True):
+        inst = super().save(commit=False)
+        header = inst.header_dims or {}
+        # Carry forward non-dimension header settings (e.g., period_grouping_id)
+        # Then overwrite/add dimension selections
+        if inst.pk:
+            for pld in inst.layout_dimensions.select_related("content_type").filter(is_header=True):
+                field_name = f"hdr_{pld.content_type.model}"
+                sel = self.cleaned_data.get(field_name)
+                header[pld.content_type.model] = sel.pk if sel else None
+        inst.header_dims = header
+        if commit:
+            inst.save()
+            self.save_m2m()
+        return inst
+    
 @admin.register(PlanningLayoutYear)
 class PlanningLayoutYearAdmin(admin.ModelAdmin):
+    form = PlanningLayoutYearAdminForm
     list_display      = ('layout', 'year', 'version')
     filter_horizontal = ('org_units', 'row_dims')
     search_fields     = ('layout__code',)
     list_filter       = ('layout', 'year', 'version')
-    inlines           = [PlanningLayoutDimensionInline]  
+    inlines = [PlanningLayoutDimensionInline, PeriodGroupingInline]
 
 
 # ── Period & Grouping ──────────────────────────────────────────────────────

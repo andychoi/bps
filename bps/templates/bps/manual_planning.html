@@ -1,3 +1,4 @@
+{# bps/manual_planning.html #}
 {% extends "bps/base.html" %}
 {% load static %}
 {% block title %}
@@ -17,20 +18,31 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     </div>
   </div>
 
-  <div class="row mb-2">
-    {% for drv in drivers_for_template %}
-      {% if drv.key != 'orgunit' and drv.key != 'service' %}
+  {% if header_drivers %}
+  <div class="card mb-3">
+    <div class="card-header">Header Selection</div>
+    <div class="card-body">
+      <div class="row g-3 align-items-end">
+        {% for hdr in header_drivers %}
         <div class="col-auto">
-          <label class="form-label" for="driver-{{ drv.key }}">{{ drv.label }}</label>
-          <select id="driver-{{ drv.key }}" class="form-select driver-filter" data-key="{{ drv.key }}">
-            <option value="">{{ drv.label }}</option>
-            {% for opt in drv.choices %}
-              <option value="{{ opt.id }}">{{ opt.name }}</option>
+          <label class="form-label" for="hdr-{{ hdr.key }}">{{ hdr.label }}</label>
+          <select id="hdr-{{ hdr.key }}" class="form-select header-select" data-key="{{ hdr.key }}">
+            <option value="">(All)</option>
+            {% for opt in hdr.choices %}
+            <option value="{{ opt.id }}">{{ opt.name }}</option>
             {% endfor %}
           </select>
         </div>
-      {% endif %}
-    {% endfor %}
+        {% endfor %}
+        <div class="col-auto">
+          <button id="btn-apply-headers" class="btn btn-outline-primary">Apply</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="row mb-2">
     <div id="manual-planning-toolbar" class="col-auto align-self-end mb-2">
       <button id="add-row-btn" class="btn btn-sm btn-outline-primary">Add Row</button>
     </div>
@@ -44,268 +56,323 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
 <link href="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3.1/dist/css/tabulator.min.css" rel="stylesheet"/>
 <script src="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3.1/dist/js/tabulator.min.js"></script>
 <script>
-(function () {
+(function(){
   // ---- Context from server ----
-  const apiURL    = "{{ api_url }}";     // should point to /api/bps/grid/
-  const updateURL = "{{ update_url }}";  // /api/bps/grid-update/
-  const layoutId  = {{ layout_year.pk }};
-  const buckets   = {{ buckets_js|safe }};
-  const kfCodes   = {{ kf_codes|safe }};
-  const drivers   = {{ drivers_js|safe }};   // [{ key, label, choices:[{id,name}] }, ...]
-  const services  = {{ services_js|safe }};  // [{code,name}]
-  const orgUnits  = {{ org_units_js|safe }}; // [{code,name}]
+  const apiURL         = "{{ api_url }}";          // /api/bps/grid/
+  const updateURL      = "{{ update_url }}";       // /api/bps/grid-update/
+  const layoutId       = {{ layout_year.pk }};
+  const buckets        = {{ buckets_js|safe }};
+  const kfCodes        = {{ kf_codes|safe }};
+  const headerDrivers  = {{ header_drivers_js|safe }};
+  const rowDrivers     = {{ row_drivers_js|safe }};
+  const headerDefaults = {{ header_defaults_js|safe }};
+  const services       = {{ services_js|safe }};
+  const orgUnits       = {{ org_units_js|safe }};
 
-  // Map bucket code => first Period.code (e.g., "01" for Jan or Q1→01)
-  const bucketFirstPeriodMap = Object.fromEntries(
-    buckets.map(b => [String(b.code), (b.periods && b.periods[0]) || String(b.code)])
-  );
-  const bucketCodes = new Set(buckets.map(b => String(b.code)));
-  const kfSet = new Set(kfCodes.map(String));
-
-  // ---- Lookups (value -> label) for list editor/filters ----
-  const toMap = (rows, valueKey, labelKey) =>
-    rows.reduce((acc, r) => (acc[r[valueKey]] = r[labelKey], acc), {});
+  // ---- Helpers ----
+  const toMap = (rows, vKey, lKey) =>
+    rows.reduce((acc, r) => (acc[String(r[vKey])] = String(r[lKey]), acc), {});
 
   const orgUnitMap = toMap(orgUnits, "code", "name");
   const serviceMap = toMap(services, "code", "name");
 
   const driverMaps = {};
-  drivers.forEach(d => {
-    driverMaps[d.key] = toMap(d.choices, "id", "name"); // PK -> name
-  });
+  rowDrivers.forEach(d => { driverMaps[d.key] = toMap(d.choices, "id", "name"); });
 
-  // ---- Tabulator "list" editor params (autocomplete) ----
-  const listEditorParams = (valuesMap) => ({
-    values: valuesMap,
-    autocomplete: true,
-    listOnEmpty: true,
-    allowEmpty: true,
-    clearable: true,
-    sortValuesList: "asc",
-    verticalNavigation: "table",
-  });
+  const headerMaps = {};
+  headerDrivers.forEach(d => { headerMaps[d.key] = toMap(d.choices, "id", "name"); });
 
-  const listHeaderFilterParams = (valuesMap) => ({
-    values: valuesMap,
-    autocomplete: true,
-    listOnEmpty: true,
-    clearable: true,
-  });
+  // Q1/Q2.. or "01" -> first month code
+  const bucketFirstPeriodMap = Object.fromEntries(
+    buckets.map(b => [b.code, (b.periods && b.periods[0]) || b.code])
+  );
 
-  // ---- Blank row template: store *codes* in *_code fields ----
-  const blankRow = {
-    org_unit_code: null,
-    service_code:  null,
-    ...drivers.reduce((acc, d) => ({ ...acc, [`${d.key}_code`]: null }), {}),
-    ...buckets
-      .flatMap(b => kfCodes.map(kf => ({ [`${b.code}_${kf}`]: null })))
-      .reduce((acc, obj) => ({ ...acc, ...obj }), {}),
+  const rowKeys = rowDrivers.map(d => d.key);
+  const hasOrgUnitCol = rowKeys.includes("orgunit");
+  const hasServiceCol = rowKeys.includes("service");
+
+  // ---------- fix: safe lookup to avoid console warnings ----------
+  function safeLookup(map) {
+    return function(cell) {
+      const v = cell.getValue();
+      if (v == null || v === "") return "";
+      const k = String(v);
+      return Object.prototype.hasOwnProperty.call(map, k) ? map[k] : "";
+    };
+  }
+
+  function listEditorParams(valuesMap) {
+    return {
+      values: valuesMap,
+      autocomplete: true,
+      listOnEmpty: true,
+      allowEmpty: true,
+      clearable: true,
+      sortValuesList: "asc",
+      verticalNavigation: "table",
+    };
+  }
+
+  // Read header selections
+  function readHeaderSelections() {
+    const selected = {};
+    document.querySelectorAll(".header-select").forEach(sel => {
+      const key = sel.dataset.key;
+      const val = sel.value || "";
+      selected[key] = val || null;
+    });
+    return selected;
+  }
+  function setHeaderDefaults() {
+    Object.entries(headerDefaults || {}).forEach(([key, val]) => {
+      const el = document.getElementById(`hdr-${key}`);
+      if (el && val != null) el.value = String(val);
+    });
+  }
+
+  // Read-only “Context” cell text
+  function formatHeaderContext(hdrs) {
+    const parts = [];
+    for (const d of headerDrivers) {
+      const id = hdrs[d.key];
+      if (id == null || id === "") continue;
+      const display = (headerMaps[d.key] && headerMaps[d.key][String(id)]) || String(id);
+      parts.push(`${d.label}: ${display}`);
+    }
+    return parts.join(" • ");
+  }
+
+  // ---- Columns ----
+  const actionsCol = {
+    title: "",
+    field: "_actions",
+    width: 48,
+    headerSort: false,
+    hozAlign: "center",
+    frozen: true,
+    formatter: () => "🗑️",
+    cellClick: (_e, cell) => deleteRow(cell.getRow()),
+    tooltip: "Delete row (blank all values in this slice)",
   };
 
-  // ---- Columns: dimensions first (editable), then numeric KFs ----
-  const dimCols = [
-    {
+  const contextCol = {
+    title: "Context",
+    field: "_context",
+    width: 300,
+    frozen: true,
+    headerSort: false,
+    hozAlign: "left",
+    cssClass: "text-muted",
+    formatter: () => formatHeaderContext(readHeaderSelections()),
+  };
+
+  const dimCols = [];
+  if (hasOrgUnitCol) {
+    dimCols.push({
       title: "Org Unit",
       field: "org_unit_code",
       width: 220,
       frozen: true,
       editor: "list",
       editorParams: listEditorParams(orgUnitMap),
-      formatter: "lookup",
-      formatterParams: orgUnitMap,
+      formatter: safeLookup(orgUnitMap),                 // <— fixed
       headerFilter: "list",
-      headerFilterParams: listHeaderFilterParams(orgUnitMap),
-      headerTooltip: "Type to search Org Units",
-    },
-    {
+      headerFilterParams: { values: orgUnitMap, autocomplete: true, clearable: true },
+      headerTooltip: "Search Org Units",
+    });
+  }
+  if (hasServiceCol) {
+    dimCols.push({
       title: "Service",
       field: "service_code",
       width: 220,
       editor: "list",
       editorParams: listEditorParams(serviceMap),
-      formatter: "lookup",
-      formatterParams: serviceMap,
+      formatter: safeLookup(serviceMap),                 // <— fixed
       headerFilter: "list",
-      headerFilterParams: listHeaderFilterParams(serviceMap),
-      headerTooltip: "Type to search Services",
-    },
-    ...drivers
+      headerFilterParams: { values: serviceMap, autocomplete: true, clearable: true },
+      headerTooltip: "Search Services",
+    });
+  }
+  dimCols.push(
+    ...rowDrivers
       .filter(d => d.key !== "orgunit" && d.key !== "service")
       .map(d => ({
         title: d.label,
         field: `${d.key}_code`,
         width: 180,
         editor: "list",
-        editorParams: listEditorParams(driverMaps[d.key]),
-        formatter: "lookup",
-        formatterParams: driverMaps[d.key],
+        editorParams: listEditorParams(driverMaps[d.key] || {}),
+        formatter: safeLookup(driverMaps[d.key] || {}),  // <— fixed
         headerFilter: "list",
-        headerFilterParams: listHeaderFilterParams(driverMaps[d.key]),
-        headerTooltip: `Type to search ${d.label}`,
-      })),
-  ];
+        headerFilterParams: { values: driverMaps[d.key] || {}, autocomplete: true, clearable: true },
+        headerTooltip: `Search ${d.label}`,
+      }))
+  );
 
+  // Value columns (keep your existing editor/formatter if you added precision logic)
   const valueCols = buckets.flatMap(b =>
     kfCodes.map(kf => ({
       title: `${b.name} ${kf}`,
-      field: `${b.code}_${kf}`,        // e.g. "01_MAN_MONTH"
-      editor: "number",
+      field: `${b.code}_${kf}`,
+      editor: overwriteNumberEditor, //editor: "number",
       hozAlign: "right",
       bottomCalc: "sum",
       formatter: "money",
-      formatterParams: { symbol: "", precision: 2 },
+      formatterParams: { symbol: "", precision: 2 }
     }))
   );
 
-  // ---- Build table ----
+  // A small editor that selects everything on focus and ensures the first key overwrites
+  function overwriteNumberEditor(cell, onRendered, success, cancel, params) {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.inputMode = "decimal";
+    const curr = cell.getValue();
+    input.value = (curr == null ? "" : curr);
+
+    let firstKeyReplacePending = true;
+
+    function isPrintable(e) {
+      return e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
+    }
+
+    onRendered(() => {
+      // Robust focus + select (some browsers unselect after focus)
+      input.focus({ preventScroll: true });
+      input.select();
+      setTimeout(() => { try { input.select(); } catch(_){} }, 0);
+    });
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { success(input.value); return; }
+      if (e.key === "Escape") { cancel(); return; }
+      if (firstKeyReplacePending && isPrintable(e)) {
+        // Replace full content with first printable key
+        input.value = e.key;
+        // Place caret at end
+        try { input.setSelectionRange(input.value.length, input.value.length); } catch(_) {}
+        firstKeyReplacePending = false;
+        e.preventDefault();
+        return;
+      }
+    });
+
+    input.addEventListener("focus", () => {
+      // If user clicked instead of tabbing, still select for consistency
+      input.select();
+    });
+
+    input.addEventListener("blur", () => success(input.value));
+
+    return input;
+  }
+
+  function buildAjaxParams() {
+    const params = { layout: layoutId };
+    const hdr = readHeaderSelections();
+    Object.entries(hdr).forEach(([k, v]) => {
+      if (v != null && v !== "") params[`header_${k}`] = v;
+    });
+    return params;
+  }
+
   const table = new Tabulator("#planning-grid", {
     layout: "fitColumns",
     pagination: "local",
     paginationSize: 50,
     ajaxURL: apiURL,
     ajaxConfig: { credentials: "include" },
-    ajaxParams: { layout: layoutId },
-    // Enhance rows with _orig_* copies so we can detect dimension moves later
-    ajaxResponse: (_url, _params, res) => {
-      return (Array.isArray(res) ? res : []).map(r => {
-        const out = { ...r };
-        out._orig_org_unit_code = r.org_unit_code ?? null;
-        out._orig_service_code  = r.service_code  ?? null;
-        drivers.forEach(d => {
-          out[`_orig_${d.key}_code`] = r[`${d.key}_code`] ?? null;
-        });
-        return out;
-      });
-    },
-    columns: [...dimCols, ...valueCols],
+    ajaxParams: buildAjaxParams(),
+    ajaxResponse: (_url, _params, res) => res,
+    columns: [actionsCol, contextCol, ...dimCols, ...valueCols],
+    history: true,
     validationMode: "highlight",
   });
 
-  // ---- Add Row: open first dimension editor immediately ----
+  setHeaderDefaults();
+  const btnApply = document.getElementById("btn-apply-headers");
+  if (btnApply) {
+    btnApply.addEventListener("click", (e) => {
+      e.preventDefault();
+      table.setData(apiURL, buildAjaxParams());
+      table.updateColumnDefinition("_context", {}); // refresh the Context text
+      table.redraw();
+    });
+  }
+
+  // ---- Add Row
+  const blankRow = (() => {
+    const base = { _context: "" };
+    if (hasOrgUnitCol) base["org_unit_code"] = null;
+    if (hasServiceCol) base["service_code"] = null;
+    rowDrivers
+      .filter(d => d.key !== "orgunit" && d.key !== "service")
+      .forEach(d => { base[`${d.key}_code`] = null; });
+    buckets.forEach(b => { kfCodes.forEach(kf => { base[`${b.code}_${kf}`] = null; }); });
+    return base;
+  })();
+
   document.getElementById("add-row-btn").addEventListener("click", async () => {
     try {
       const row = await table.addRow({ ...blankRow }, true);
-      row.getCell("org_unit_code").edit();
-    } catch (e) {
-      console.error(e);
-    }
+      // focus first editable dim col if present
+      const first = dimCols[0];
+      if (first) row.getCell(first.field).edit();
+    } catch (e) { console.error(e); }
   });
 
-  // Helper: a field is a VALUE field iff it's `${bucket}_${kf}`
-  function isValueField(field) {
-    if (typeof field !== "string") return false;
-    if (field.endsWith("_code")) return false; // dimensions
-    const i = field.indexOf("_");
-    if (i < 0) return false;
-    const bucket = field.slice(0, i);
-    const kf = field.slice(i + 1); // MAN_MONTH etc.
-    return bucketCodes.has(bucket) && kfSet.has(kf);
-  }
+  // Build value-field universe once
+  const VALUE_FIELDS = buckets.flatMap(b => kfCodes.map(kf => `${b.code}_${kf}`));
 
-  // Utilities to push deduped updates
-  function updatesKey(base, period, kf) {
-    const dims = [base.org_unit, base.service];
-    // keep driver order stable
-    drivers.forEach(dr => dims.push(base[dr.key] ?? null));
-    return JSON.stringify([period, kf, ...dims]);
-  }
-  function pushUpdate(map, base, period, kf, value) {
-    const key = updatesKey(base, period, kf);
-    if (!map.has(key)) {
-      map.set(key, { layout: layoutId, ...base, period, key_figure: kf, value });
-    } else {
-      // last write wins (should be identical anyway)
-      map.get(key).value = value;
-    }
-  }
-
-  // ---- Save Changes ----
+  // ---- Save (unchanged logic; sends only edited numeric cells) ----
   document.getElementById("btn-save").addEventListener("click", () => {
     const editedCells = table.getEditedCells();
-    const valueCells = editedCells.filter(c => isValueField(c.getField()));
+    const valueCells = editedCells.filter(c => VALUE_FIELDS.includes(c.getField()));
+    if (!valueCells.length) { alert("No numeric changes to save."); return; }
 
-    const updatesMap = new Map();
-    const rowsMissingDims = new Set();
+    const headerSelected = readHeaderSelections();
+    const updates = [];
+    const missingOrgRows = new Set();
 
-    // 1) Handle edited numeric cells directly
     for (const cell of valueCells) {
       const row = cell.getRow();
       const d = row.getData();
 
-      if (!d.org_unit_code) {
-        rowsMissingDims.add(row.getPosition(true));
-        continue;
-      }
-
       const field = cell.getField();
-      const us = field.indexOf("_");
-      const bucketCode = field.slice(0, us);
-      const kf = field.slice(us + 1);
+      const sep = field.indexOf("_");
+      const bucketCode = field.slice(0, sep);
+      const kf = field.slice(sep + 1);
       const period = bucketFirstPeriodMap[bucketCode] || bucketCode;
 
-      const baseNew = { org_unit: d.org_unit_code, service: d.service_code || null };
-      drivers.forEach(dr => (baseNew[dr.key] = d[`${dr.key}_code`] ?? null));
+      const base = { layout: layoutId };
 
-      pushUpdate(updatesMap, baseNew, period, kf, cell.getValue());
-    }
-
-    // 2) Handle dimension moves (even if no numeric cells were edited)
-    for (const row of table.getRows()) {
-      const d = row.getData();
-
-      const changed =
-        d.org_unit_code !== d._orig_org_unit_code ||
-        d.service_code  !== d._orig_service_code  ||
-        drivers.some(dr => d[`${dr.key}_code`] !== d[`_orig_${dr.key}_code`]);
-
-      if (!changed) continue;
-
-      if (!d.org_unit_code) {
-        rowsMissingDims.add(row.getPosition(true));
+      const orgFromRow = hasOrgUnitCol ? d.org_unit_code : null;
+      const orgFromHdr = headerSelected.orgunit || null;
+      base.org_unit = orgFromRow || orgFromHdr || null;
+      if (!base.org_unit) {
+        missingOrgRows.add(row.getPosition(true));
         continue;
       }
 
-      const baseOld = {
-        org_unit: d._orig_org_unit_code,
-        service: d._orig_service_code || null,
-      };
-      const baseNew = {
-        org_unit: d.org_unit_code,
-        service: d.service_code || null,
-      };
-      drivers.forEach(dr => {
-        baseOld[dr.key] = d[`_orig_${dr.key}_code`] ?? null;
-        baseNew[dr.key] = d[`${dr.key}_code`] ?? null;
-      });
+      const svcFromRow = hasServiceCol ? d.service_code : null;
+      const svcFromHdr = headerSelected.service || null;
+      base.service = svcFromRow || svcFromHdr || null;
 
-      // For every value field present on the row, "move" it:
-      // write 0 to old slice, write current value to new slice.
-      for (const b of buckets) {
-        for (const kf of kfCodes) {
-          const field = `${b.code}_${kf}`;
-          if (!Object.prototype.hasOwnProperty.call(d, field)) continue;
-          const val = d[field];
-          if (val === null || val === "" || typeof val === "undefined") continue;
+      rowDrivers
+        .filter(dr => dr.key !== "orgunit" && dr.key !== "service")
+        .forEach(dr => { base[dr.key] = d[`${dr.key}_code`] ?? null; });
 
-          const period = bucketFirstPeriodMap[String(b.code)] || String(b.code);
+      headerDrivers
+        .filter(hd => hd.key !== "orgunit" && hd.key !== "service")
+        .forEach(hd => { base[hd.key] = headerSelected[hd.key] ?? null; });
 
-          // clear old
-          if (baseOld.org_unit) {
-            pushUpdate(updatesMap, baseOld, period, kf, 0);
-          }
-          // set new
-          pushUpdate(updatesMap, baseNew, period, kf, val);
-        }
-      }
+      updates.push({ ...base, period, key_figure: kf, value: cell.getValue() });
     }
 
-    const updates = Array.from(updatesMap.values());
-
     if (!updates.length) {
-      if (rowsMissingDims.size) {
-        alert("Fill Org Unit (and other dimensions) before saving.\nRows: " + [...rowsMissingDims].join(", "));
-      } else if (!valueCells.length) {
-        alert("No changes to save.");
+      if (missingOrgRows.size) {
+        alert("Org Unit is required (from header or row) before saving.\nRows: " + [...missingOrgRows].join(", "));
       } else {
         alert("No valid changes to save.");
       }
@@ -315,61 +382,107 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     fetch(updateURL, {
       method: "PATCH",
       credentials: "include",
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRFToken": getCookie("csrftoken"),
-      },
-      body: JSON.stringify({ layout: layoutId, delete_zeros: true, delete_blanks: true, updates }),
+      headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },
+      body: JSON.stringify({
+        layout: layoutId,
+        headers: headerSelected,
+        delete_zeros: true,    // explicit (defaults true on server)
+        delete_blanks: true,   // explicit (defaults true on server)
+        updates,
+      }),
     })
       .then(async (res) => {
         const data = await res.json().catch(() => ({}));
-        const hasErrors = Array.isArray(data.errors) && data.errors.length > 0;
-
-        if (res.status === 207 || hasErrors) {
-          (data.errors || []).forEach(e => {
-            const u = e.update || {};
-            const r = findRowByUpdate(u);
-            if (r) r.getElement().style.backgroundColor = "rgba(220,53,69,.12)";
-          });
+        if (res.status === 207 || (Array.isArray(data.errors) && data.errors.length)) {
           const msg = [
             "Some updates failed:",
             ...(data.errors || []).slice(0, 10).map(e => `• ${e.error}`),
             (data.errors || []).length > 10 ? `…and ${data.errors.length - 10} more` : ""
-          ].filter(Boolean).join("\n");
-          alert(msg || "Some updates failed.");
-          table.replaceData();
-          throw new Error("Partial failure");
+          ].join("\n");
+          alert(msg);
+          table.replaceData();  // reload
+          return;
         }
-
         if (!res.ok) throw new Error(data.detail || "Save failed");
-
-        alert(`Saved. Updated ${data.updated ?? updates.length} cells.`);
-        table.replaceData();
+        alert(`All changes saved. Updated ${data.updated ?? "some"} cells.`);
+        table.setData(apiURL, buildAjaxParams());
       })
-      .catch((err) => {
-        console.error(err);
-      });
-
-    function findRowByUpdate(upd) {
-      const rows = table.getRows();
-      for (const row of rows) {
-        const d = row.getData();
-        const dimsMatch =
-          d.org_unit_code === upd.org_unit &&
-          (d.service_code || null) === (upd.service || null) &&
-          drivers.every(dr => (d[`${dr.key}_code`] ?? null) === (upd[dr.key] ?? null));
-        if (dimsMatch) return row;
-      }
-      return null;
-    }
+      .catch((err) => { console.error(err); alert("Save failed."); });
   });
 
-  // ---- CSRF helper ----
+  // ---- NEW: Delete Row (blank every value in this slice so API deletes matching facts) ----
+  function deleteRow(row) {
+    const d = row.getData();
+    const headerSelected = readHeaderSelections();
+
+    // Need org unit (from row or header) to resolve session
+    const orgFromRow = hasOrgUnitCol ? d.org_unit_code : null;
+    const orgFromHdr = headerSelected.orgunit || null;
+    const orgUnit = orgFromRow || orgFromHdr || null;
+    if (!orgUnit) {
+      alert("Org Unit is required (from header or row) to delete this slice.");
+      return;
+    }
+
+    const svcFromRow = hasServiceCol ? d.service_code : null;
+    const svcFromHdr = headerSelected.service || null;
+    const service = svcFromRow || svcFromHdr || null;
+
+    // Build a base payload with both row and header dims
+    const base = { layout: layoutId, org_unit: orgUnit, service };
+    rowDrivers
+      .filter(dr => dr.key !== "orgunit" && dr.key !== "service")
+      .forEach(dr => { base[dr.key] = d[`${dr.key}_code`] ?? null; });
+    headerDrivers
+      .filter(hd => hd.key !== "orgunit" && hd.key !== "service")
+      .forEach(hd => { base[hd.key] = headerSelected[hd.key] ?? null; });
+
+    // Generate one blank update per value field
+    const updates = [];
+    for (const field of VALUE_FIELDS) {
+      const sep = field.indexOf("_");
+      const bucketCode = field.slice(0, sep);
+      const kf = field.slice(sep + 1);
+      const period = bucketFirstPeriodMap[bucketCode] || bucketCode;
+      updates.push({ ...base, period, key_figure: kf, value: "" }); // blank -> delete on server
+    }
+
+    if (!updates.length) return;
+
+    if (!confirm("Delete this entire row (all months/key figures) from this header slice?")) return;
+
+    fetch(updateURL, {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },
+      body: JSON.stringify({
+        layout: layoutId,
+        headers: headerSelected,
+        delete_zeros: true,
+        delete_blanks: true,
+        updates,
+      }),
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const msg = (data && (data.detail || (data.errors && JSON.stringify(data.errors)))) || res.statusText;
+          throw new Error(msg);
+        }
+        // Optimistic UI: remove row locally; fallback to reload
+        try { table.deleteRow(row); } catch (_) { table.replaceData(); }
+      })
+      .catch(err => {
+        console.error(err);
+        alert("Failed to delete row.");
+      });
+  }
+
   function getCookie(name) {
     let v = null;
-    document.cookie.split(";").forEach(c => {
+    document.cookie.split(';').forEach(c => {
       c = c.trim();
-      if (c.startsWith(name + "=")) v = decodeURIComponent(c.slice(name.length + 1));
+      if (c.startsWith(name + '=')) v = decodeURIComponent(c.slice(name.length + 1));
     });
     return v;
   }

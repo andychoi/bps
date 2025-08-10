@@ -12,9 +12,10 @@ from django.views.generic import (
     TemplateView, ListView, DetailView,
     FormView, RedirectView
 )
+
 from django.views.generic.edit import FormMixin
 from django.forms import modelform_factory
-from bps.models.models_workflow import ScenarioStep  
+from ..models.models_workflow import ScenarioStep, ScenarioStage
 from ..models.models import (
     PlanningScenario, PlanningSession, PlanningStage, PlanningLayoutYear,
     PlanningLayout, Year, Version, Period,
@@ -39,8 +40,14 @@ class ScenarioDashboardView(TemplateView):
         sessions = PlanningSession.objects.filter(
             scenario=scenario
         ).select_related("org_unit", "current_step__stage", "current_step__layout")
-        steps = ScenarioStep.objects.filter(scenario=scenario)\
-                    .select_related("stage","layout").order_by("order")
+
+        steps = (
+            ScenarioStep.objects
+            .filter(scenario=scenario)
+            .select_related("stage", "layout")
+            .order_by("order")
+        )
+
         return {
             "scenario":   scenario,
             "sessions":   sessions,
@@ -231,7 +238,7 @@ class PlanningSessionDetailView(FormMixin, DetailView):
                 {"url": reverse("bps:session_list"), "title": "Sessions"},
                 {"url": self.request.path,           "title": sess.org_unit.name},
             ],
-            "can_advance":  self.request.user.is_staff and sess.scenario.steps.filter(order__gt=step.order).exists(),
+            "can_advance":  self.request.user.is_staff and ScenarioStep.objects.filter(scenario=sess.scenario, order__gt=step.order).exists(),
         })
         return ctx
 

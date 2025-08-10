@@ -1,3 +1,4 @@
+# management/commands/bps_demo_2env.py
 import sys
 
 from django.contrib.auth import get_user_model
@@ -22,7 +23,6 @@ from bps.models.models_workflow import (
     ScenarioStep,
 )
 
-
 User = get_user_model()
 
 STAGES = [
@@ -44,12 +44,24 @@ LAYOUT_DEFS = [
 # Only include real Django models in row dims.
 ROW_DIMS = {
     "RES_FTE": ["Position", "Skill"],
-    "RES_CON": ["InternalOrder", "Skill"],  # extra attributes (rtype/level/country) live in extra_dimensions_json
+    "RES_CON": ["InternalOrder", "Skill"],  # extra attributes live in extra_dimensions_json
     "SYS_DEMAND": ["Service", "Skill"],
     "RES_ALLOC": ["Position", "Service"],
     "SW_LICENSE": ["Service", "InternalOrder"],
     "ADMIN_OVH": ["OrgUnit", "Service"],
     "SRV_COST": ["Service"],
+}
+
+# NEW: which dimensions should behave like BW-BPS "header selections" (per layout)
+# You can tweak per layout if you want Service, Position, etc. as headers too.
+HEADER_DIMS = {
+    "RES_FTE":    ["OrgUnit"],
+    "RES_CON":    ["OrgUnit"],
+    "SYS_DEMAND": ["OrgUnit"],
+    "RES_ALLOC":  ["OrgUnit"],
+    "SW_LICENSE": ["OrgUnit"],
+    "ADMIN_OVH":  ["OrgUnit"],  # also present in ROW_DIMS; UI will hide the row column if header is set
+    "SRV_COST":   ["OrgUnit"],
 }
 
 KF_DEFS = {
@@ -73,7 +85,7 @@ KF_DEFS = {
 
 
 class Command(BaseCommand):
-    help = "Step 2: Create Layouts, Dimensions, LayoutYears, Scenarios, etc."
+    help = "Step 2: Create Layouts, Dimensions (row + headers), LayoutYears, Scenarios, etc."
 
     def handle(self, *args, **options):
         admin = User.objects.filter(is_superuser=True).first()
@@ -133,7 +145,13 @@ class Command(BaseCommand):
                     PeriodGrouping.objects.get_or_create(
                         layout_year=ply, months_per_bucket=3, defaults={"label_prefix": "Q"}
                     )
-                    ply.header_dims = {"period_grouping_id": monthly.pk}
+
+                    # seed header_dims JSON with period_grouping and empty header selections
+                    header_json = dict(ply.header_dims or {})
+                    header_json["period_grouping_id"] = monthly.pk
+                    for hdr_name in HEADER_DIMS.get(layout.code, []):
+                        header_json.setdefault(hdr_name, None)  # let Admin choose later
+                    ply.header_dims = header_json
                     ply.save(update_fields=["header_dims"])
 
         self.stdout.write(
@@ -154,7 +172,7 @@ class Command(BaseCommand):
                     },
                 )
 
-        # LayoutDimensions (ContentTypes for row dims)
+        # ContentTypes
         ct_map = {
             "Position": ContentType.objects.get_for_model(Position),
             "Skill": ContentType.objects.get_for_model(Skill),
@@ -163,20 +181,72 @@ class Command(BaseCommand):
             "OrgUnit": ContentType.objects.get_for_model(OrgUnit),
         }
 
+        # LayoutDimensions (row dims + header dims with is_header flag)
         for ply in PlanningLayoutYear.objects.filter(layout__in=layouts.values()):
             PlanningLayoutDimension.objects.filter(layout_year=ply).delete()
-            ct_list = []
+
+            # Row dims
+            row_cts = []
             for idx, model_name in enumerate(ROW_DIMS[ply.layout.code], start=1):
                 ct = ct_map.get(model_name)
                 if not ct:
                     continue
-                PlanningLayoutDimension.objects.create(
-                    layout_year=ply, content_type=ct, is_row=True, is_column=False, order=idx
+                # Keep is_row=True; is_header may also be True if this same model is a header
+                pld, _ = PlanningLayoutDimension.objects.get_or_create(
+                    layout_year=ply,
+                    content_type=ct,
+                    defaults={
+                        "is_row": True,
+                        "is_column": False,
+                        "is_header": False,
+                        "order": idx,
+                    },
                 )
-                ct_list.append(ct)
-            ply.row_dims.set(ct_list)
+                # Make sure flags/order are set (idempotent)
+                pld.is_row = True
+                pld.is_column = False
+                pld.order = idx
+                pld.save(update_fields=["is_row", "is_column", "order"])
+                row_cts.append(ct)
 
-        self.stdout.write(self.style.SUCCESS("✔️ LayoutDimensions & PlanningKeyFigures defined"))
+            # Header dims
+            # If a header dim is ALSO a row dim, we simply flip its is_header=True (UI hides it from grid)
+            hdr_names = HEADER_DIMS.get(ply.layout.code, [])
+            hdr_start_order = len(row_cts) + 1  # put headers after rows for deterministic ordering
+            for hidx, model_name in enumerate(hdr_names, start=hdr_start_order):
+                ct = ct_map.get(model_name)
+                if not ct:
+                    continue
+                pld, _ = PlanningLayoutDimension.objects.get_or_create(
+                    layout_year=ply,
+                    content_type=ct,
+                    defaults={
+                        "is_row": model_name in ROW_DIMS.get(ply.layout.code, []),
+                        "is_column": False,
+                        "is_header": True,
+                        "order": hidx,
+                    },
+                )
+                # ensure header flag is set even if the record existed as a pure row-dim previously
+                changed = False
+                if not pld.is_header:
+                    pld.is_header = True
+                    changed = True
+                # keep is_row as True if it is a declared row dimension; otherwise False
+                should_row = model_name in ROW_DIMS.get(ply.layout.code, [])
+                if pld.is_row != should_row:
+                    pld.is_row = should_row
+                    changed = True
+                if pld.order != hidx:
+                    pld.order = hidx
+                    changed = True
+                if changed:
+                    pld.save(update_fields=["is_header", "is_row", "order"])
+
+            # maintain the ManyToMany "row_dims" on the LayoutYear (row dims only)
+            ply.row_dims.set(row_cts)
+
+        self.stdout.write(self.style.SUCCESS("✔️ LayoutDimensions (rows + headers) & PlanningKeyFigures defined"))
 
         # Workflow (Stages, Scenarios, Steps, OrgUnit membership)
         stage_objs = []

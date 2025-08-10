@@ -77,7 +77,11 @@ class PlanningLayoutDimension(models.Model):
                                        on_delete=models.CASCADE)
     is_row         = models.BooleanField(default=False)
     is_column      = models.BooleanField(default=False)
-
+    is_header      = models.BooleanField(
+        default=False,
+        help_text="If true, this dimension is selected in the header (BW-BPS style) "
+                  "and should not appear as a lead column in the manual grid."
+    )
     order          = models.PositiveSmallIntegerField(default=0,
                         help_text="Defines the sequence in the grid")
 

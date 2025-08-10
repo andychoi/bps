@@ -39,6 +39,7 @@
       - fact_list.html
       - formula_list.html
       - inbox.html
+      - manual_planning copy.html
       - manual_planning.html
       - manual_planning_select.html
       - notifications.html
@@ -62,9 +63,11 @@
 
 ### `api/api.py`
 ```python
+import re
 from decimal import Decimal
 from django.shortcuts import get_object_or_404
 from django.db import transaction
+from rest_framework.permissions import IsAuthenticated
 from rest_framework import serializers, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -72,32 +75,100 @@ from bps.models.models_layout import PlanningLayoutYear
 from bps.models.models import PlanningFact, Period, KeyFigure, DataRequest
 from bps.models.models_dimension import OrgUnit, Service
 from bps.models.models_workflow import PlanningSession
+MONTH_ALIASES = {
+    "JAN": "01", "FEB": "02", "MAR": "03", "APR": "04",
+    "MAY": "05", "JUN": "06", "JUL": "07", "AUG": "08",
+    "SEP": "09", "OCT": "10", "NOV": "11", "DEC": "12",
+}
+QTR_FIRST_MONTH = {"Q1": "01", "Q2": "04", "Q3": "07", "Q4": "10"}
+def normalize_period_code(raw):
+    if raw is None:
+        raise ValueError("Missing period")
+    s = str(raw).strip().upper()
+    if s.startswith("M") and s[1:].isdigit():
+        s = s[1:]
+    if s in QTR_FIRST_MONTH:
+        return QTR_FIRST_MONTH[s]
+    if s[:3] in MONTH_ALIASES:
+        return MONTH_ALIASES[s[:3]]
+    if s.isdigit():
+        i = int(s)
+        if 1 <= i <= 12:
+            return f"{i:02d}"
+    if re.fullmatch(r"\d{2}", s):
+        return s
+    raise ValueError(f"Invalid period '{raw}'")
 class BulkUpdateSerializer(serializers.Serializer):
-    layout  = serializers.IntegerField()
+    layout = serializers.IntegerField()
+    delete_zeros = serializers.BooleanField(required=False, default=True)
+    delete_blanks = serializers.BooleanField(required=False, default=True)
+    headers = serializers.DictField(
+        child=serializers.JSONField(allow_null=True),
+        required=False,
+        default=dict,
+    )
     updates = serializers.ListField(
-        child=serializers.DictField(child=serializers.CharField())
+        child=serializers.DictField(child=serializers.JSONField(allow_null=True))
     )
 class PlanningGridView(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request):
-        ly_pk = request.query_params.get('layout')
-        ly    = get_object_or_404(PlanningLayoutYear, pk=ly_pk)
+        ly_pk = request.query_params.get("layout")
+        ly = get_object_or_404(PlanningLayoutYear, pk=ly_pk)
         row_dims = list(ly.layout_dimensions.filter(is_row=True))
         dim_keys = [ld.content_type.model for ld in row_dims]
-        dim_models = {
-            ld.content_type.model: ld.content_type.model_class()
-            for ld in row_dims
-        }
+        dim_models = {ld.content_type.model: ld.content_type.model_class() for ld in row_dims}
         qs = (
             PlanningFact.objects
             .filter(session__scenario__layout_year=ly)
-            .select_related('org_unit','service','period','key_figure')
+            .select_related("org_unit", "service", "period", "key_figure")
         )
+        def _parse_pk_or_code(val):
+            if val is None or val == "":
+                return None, None
+            s = str(val).strip()
+            if s.lower() in {"null", "(null)"}:
+                return "NULL", None
+            if s.isdigit():
+                return "PK", int(s)
+            return "CODE", s
+        org_sel = request.query_params.get("header_orgunit")
+        if org_sel is not None and org_sel != "":
+            kind, v = _parse_pk_or_code(org_sel)
+            if kind == "PK":
+                qs = qs.filter(org_unit_id=v)
+            elif kind == "CODE":
+                qs = qs.filter(org_unit__code=v)
+        svc_sel = request.query_params.get("header_service")
+        if svc_sel is not None and svc_sel != "":
+            kind, v = _parse_pk_or_code(svc_sel)
+            if kind == "PK":
+                qs = qs.filter(service_id=v)
+            elif kind == "CODE":
+                qs = qs.filter(service__code=v)
+            elif kind == "NULL":
+                qs = qs.filter(service__isnull=True)
+        for param, val in request.query_params.items():
+            if not param.startswith("header_"):
+                continue
+            key = param[len("header_"):]
+            if key in {"orgunit", "service"}:
+                continue
+            if key not in dim_keys:
+                continue
+            if val is None or val == "":
+                continue
+            try:
+                v_int = int(val)
+            except (TypeError, ValueError):
+                continue
+            qs = qs.filter(extra_dimensions_json__contains={key: v_int})
         rows = {}
         for fact in qs:
             org_code = fact.org_unit.code
             svc_code = fact.service.code if fact.service else ""
             ed = fact.extra_dimensions_json or {}
-            dim_codes = [ ed.get(k) for k in dim_keys ]
+            dim_codes = [ed.get(k) for k in dim_keys]
             key = (org_code, svc_code, *dim_codes)
             if key not in rows:
                 base = {
@@ -116,7 +187,7 @@ class PlanningGridView(APIView):
             rows[key][col] = float(fact.value)
         return Response(list(rows.values()))
 class PlanningGridBulkUpdateView(APIView):
-    http_method_names = ["get","post","patch","options"]
+    http_method_names = ["get", "post", "patch", "options"]
     @transaction.atomic
     def post(self, request, *args, **kwargs):
         return self._handle(request)
@@ -124,26 +195,69 @@ class PlanningGridBulkUpdateView(APIView):
     def patch(self, request, *args, **kwargs):
         return self._handle(request)
     def _handle(self, request):
-        data = BulkUpdateSerializer(data=request.data)
-        data.is_valid(raise_exception=True)
-        ly = get_object_or_404(PlanningLayoutYear, pk=data.validated_data["layout"])
-        errors, success = [], 0
+        ser = BulkUpdateSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        payload = ser.validated_data
+        ly = get_object_or_404(PlanningLayoutYear, pk=payload["layout"])
+        delete_zeros = payload.get("delete_zeros", True)
+        delete_blanks = payload.get("delete_blanks", True)
+        header_defaults = payload.get("headers", {}) or {}
+        errors, updated, deleted = [], 0, 0
         dr_by_sess = {}
         row_dims = list(ly.layout_dimensions.filter(is_row=True))
-        for upd in data.validated_data["updates"]:
+        row_dim_keys = [ld.content_type.model for ld in row_dims]
+        for upd in payload["updates"]:
             try:
-                org = OrgUnit.objects.get(code=upd["org_unit"])
-                svc = Service.objects.get(code=upd.get("service")) if upd.get("service") else None
-                per = Period.objects.get(code=upd["period"])
-                kf  = KeyFigure.objects.get(code=upd["key_figure"])
+                org_code = upd.get("org_unit") or header_defaults.get("org_unit")
+                if not org_code:
+                    raise ValueError("Missing 'org_unit' (row or headers)")
+                org = OrgUnit.objects.get(code=org_code)
+                svc_code = upd.get("service")
+                if svc_code is None:
+                    svc_code = header_defaults.get("service")
+                svc = Service.objects.get(code=svc_code) if svc_code else None
+                per_code_raw = upd.get("period")
+                if not per_code_raw:
+                    raise ValueError("Missing 'period' code")
+                per_code = normalize_period_code(per_code_raw)
+                per = Period.objects.get(code=per_code)
+                kf_code = upd.get("key_figure")
+                if not kf_code:
+                    raise ValueError("Missing 'key_figure' code")
+                kf = KeyFigure.objects.get(code=kf_code)
+                extra = {}
+                for key in row_dim_keys:
+                    val = upd.get(key)
+                    if val is None:
+                        val = header_defaults.get(key)
+                    if val is not None:
+                        extra[key] = val
                 session = PlanningSession.objects.get(
                     scenario__layout_year=ly, org_unit=org
                 )
-                extra = {}
-                for ld in row_dims:
-                    dk = ld.content_type.model
-                    if dk in upd and upd[dk] is not None:
-                        extra[dk] = upd[dk]
+                raw_val   = upd.get("value", None)
+                is_blank  = (raw_val is None) or (isinstance(raw_val, str) and raw_val.strip() == "")
+                if delete_blanks and is_blank:
+                    qs = PlanningFact.objects.filter(
+                        session=session, org_unit=org, service=svc,
+                        period=per, key_figure=kf, extra_dimensions_json=extra
+                    )
+                    cnt = qs.count()
+                    if cnt:
+                        qs.delete()
+                        deleted += cnt
+                    continue
+                val = Decimal(str(raw_val))
+                if delete_zeros and val == 0:
+                    qs = PlanningFact.objects.filter(
+                        session=session, org_unit=org, service=svc,
+                        period=per, key_figure=kf, extra_dimensions_json=extra
+                    )
+                    cnt = qs.count()
+                    if cnt:
+                        qs.delete()
+                        deleted += cnt
+                    continue
                 dr = dr_by_sess.get(session.pk)
                 if not dr:
                     dr = DataRequest.objects.create(
@@ -158,32 +272,31 @@ class PlanningGridBulkUpdateView(APIView):
                     key_figure=kf,
                     extra_dimensions_json=extra,
                     defaults={
-                        "request":   dr,
-                        "version":   ly.version,
-                        "year":      ly.year,
-                        "uom":       None,
-                        "value":     Decimal(upd["value"]),
+                        "request": dr,
+                        "version": ly.version,
+                        "year":    ly.year,
+                        "uom":     kf.default_uom,
+                        "value":   val,
                         "ref_value": Decimal("0"),
-                        "ref_uom":   None,
+                        "ref_uom": None,
                     },
                 )
                 if not created:
                     fact.request = dr
-                    fact.value   = Decimal(upd["value"])
+                    fact.value   = val
                     if extra:
                         fact.extra_dimensions_json = extra
-                        fact.save(update_fields=["request", "value", "extra_dimensions_json"])
+                        fact.save(update_fields=["request","value","extra_dimensions_json"])
                     else:
-                        fact.save(update_fields=["request", "value"])
-                success += 1
+                        fact.save(update_fields=["request","value"])
+                updated += 1
             except Exception as e:
                 errors.append({"update": upd, "error": str(e)})
+        result = {"updated": updated, "deleted": deleted}
         if errors:
-            return Response(
-                {"updated": success, "errors": errors},
-                status=status.HTTP_207_MULTI_STATUS,
-            )
-        return Response({"updated": success}, status=status.HTTP_200_OK)
+            result["errors"] = errors
+            return Response(result, status=status.HTTP_207_MULTI_STATUS)
+        return Response(result, status=status.HTTP_200_OK)
 ```
 
 ### `api/serializers.py`
@@ -415,7 +528,7 @@ class PlanningGridAPIView(APIView):
                     "org_unit": f.org_unit.name,
                     "service":  f.service.name if f.service else None,
                 })
-                col = f"M{f.period.code}_{f.key_figure.code}"
+                col = f"{f.period.code}_{f.key_figure.code}"
                 cell = row.setdefault(col, {})
                 cell[tag] = float(f.value)
         ingest(base_qs,   "base")
@@ -548,15 +661,19 @@ class PeriodGrouping(models.Model):
         unique_together = ('layout_year','months_per_bucket')
     def buckets(self):
         from bps.models.models import Period
-        qs = Period.objects.order_by('order')
-        months = list(qs)
-        size   = self.months_per_bucket
+        months = list(Period.objects.order_by('order'))
+        size = self.months_per_bucket
         buckets = []
         for i in range(0, 12, size):
             group = months[i:i+size]
-            idx   = (i//size)+1
-            code  = f"{self.label_prefix}{idx}"
-            buckets.append({'code':code, 'name':code, 'periods':group})
+            if size == 1:
+                code = group[0].code
+                name = group[0].name
+            else:
+                idx = (i // size) + 1
+                code = f"{self.label_prefix}{idx}"
+                name = code
+            buckets.append({'code': code, 'name': name, 'periods': group})
         return buckets
 from .models_workflow import *
 class DataRequest(TimestampModel):
@@ -913,6 +1030,11 @@ class PlanningLayoutDimension(models.Model):
                                        on_delete=models.CASCADE)
     is_row         = models.BooleanField(default=False)
     is_column      = models.BooleanField(default=False)
+    is_header      = models.BooleanField(
+        default=False,
+        help_text="If true, this dimension is selected in the header (BW-BPS style) "
+                  "and should not appear as a lead column in the manual grid."
+    )
     order          = models.PositiveSmallIntegerField(default=0,
                         help_text="Defines the sequence in the grid")
     allowed_values = models.JSONField(blank=True, default=list,
@@ -1184,7 +1306,7 @@ class OrgUnitSerializer(serializers.ModelSerializer):
 <script>
 function resetData() {
   if (!confirm("This will zero out all existing values before saving. Continue?")) return;
-  fetch("/api/bps_planning_grid_update", {
+  fetch("{% url 'bps_api:planning_grid_update' %}", {
     method: "PATCH",
     headers: {
       "Content-Type":"application/json",
@@ -1561,7 +1683,7 @@ createApp({
               <div class="col">
                 <div class="card h-100">
                   <div class="card-body p-2">
-                    <h5 class="card-title mb-1">{{ ly.layout.title }}</h5>
+                    <h5 class="card-title mb-1">{{ ly.layout.name }}</h5>
                     <p class="card-text small mb-0">Version: {{ ly.version.code }}</p>
                   </div>
                   <div class="card-footer text-end">
@@ -1584,7 +1706,7 @@ createApp({
         <div class="card-header bg-success text-white">Planning Functions</div>
         <div class="card-body">
           <div class="list-group">
-            <a href="{ url 'bps:manual-planning-select' }" class="list-group-item list-group-item-action">
+            <a href="{% url 'bps:manual_planning_select' %}" class="list-group-item list-group-item-action">
               🧮 Manual Planning Grid
             </a>
             {% for fn in planning_funcs %}
@@ -1630,29 +1752,20 @@ createApp({
   <h2>Facts</h2>
   <table class="table table-striped">
     <thead>
-      <tr>
-        <th>Period</th>
-        <th>Qty</th>
-        <th>UoM</th>
-        <th>Amount</th>
-        <th>UoM</th>
-        <th>Other</th>
-        <th>Value</th>
-      </tr>
+      <tr><th>Period</th><th>Key Figure</th><th>Value</th><th>UoM</th><th>Ref Value</th><th>Ref UoM</th></tr>
     </thead>
     <tbody>
       {% for f in facts %}
-      <tr>
-        <td>{{ f.period }}</td>
-        <td>{{ f.quantity }}</td>
-        <td>{{ f.quantity_uom }}</td>
-        <td>{{ f.amount }}</td>
-        <td>{{ f.amount_uom }}</td>
-        <td>{{ f.other_key_figure }}</td>
-        <td>{{ f.other_value }}</td>
-      </tr>
+        <tr>
+          <td>{{ f.period.code }}</td>
+          <td>{{ f.key_figure.code }}</td>
+          <td>{{ f.value }}</td>
+          <td>{{ f.uom.code|default:"–" }}</td>
+          <td>{{ f.ref_value }}</td>
+          <td>{{ f.ref_uom.code|default:"–" }}</td>
+        </tr>
       {% empty %}
-      <tr><td colspan="7">No facts recorded yet.</td></tr>
+        <tr><td colspan="6">No facts recorded yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -1790,7 +1903,7 @@ createApp({
 {% endblock %}
 ```
 
-### `templates/bps/manual_planning.html`
+### `templates/bps/manual_planning copy.html`
 ```html
 {% extends "bps/base.html" %}
 {% load static %}
@@ -1948,11 +2061,352 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     .then(() => {
       alert("All changes saved successfully.");
       table.clearHistory();
-      table.replaceData();
+      table.replaceData(apiURL, { layout: layoutId }, "get");
     })
     .catch(err => { console.error(err); alert("Save failed: " + (err.detail || JSON.stringify(err))); });
   });
   // CSRF helper
+  function getCookie(name) {
+    let v = null;
+    document.cookie.split(';').forEach(c => {
+      c = c.trim();
+      if (c.startsWith(name + '=')) v = decodeURIComponent(c.slice(name.length + 1));
+    });
+    return v;
+  }
+})();
+</script>
+{% endblock %}
+```
+
+### `templates/bps/manual_planning.html`
+```html
+{% extends "bps/base.html" %}
+{% load static %}
+{% block title %}
+Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{{ layout_year.version.code }})
+{% endblock %}
+{% block content %}
+<div class="container-fluid mt-3">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h2>
+      Manual Planning – {{ layout_year.layout.name }}
+      <small class="text-muted">({{ layout_year.year.code }}/{{ layout_year.version.code }})</small>
+    </h2>
+    <div>
+      <button class="btn btn-primary me-2" id="btn-save">Save Changes</button>
+      <a class="btn btn-outline-secondary" href="{% url 'admin:bps_planninglayout_change' layout_year.layout.pk %}">Edit Layout</a>
+    </div>
+  </div>
+  {% if header_drivers %}
+  <div class="card mb-3">
+    <div class="card-header">Header Selection</div>
+    <div class="card-body">
+      <div class="row g-3 align-items-end">
+        {% for hdr in header_drivers %}
+        <div class="col-auto">
+          <label class="form-label" for="hdr-{{ hdr.key }}">{{ hdr.label }}</label>
+          <select id="hdr-{{ hdr.key }}" class="form-select header-select" data-key="{{ hdr.key }}">
+            <option value="">(All)</option>
+            {% for opt in hdr.choices %}
+            <option value="{{ opt.id }}">{{ opt.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% endfor %}
+        <div class="col-auto">
+          <button id="btn-apply-headers" class="btn btn-outline-primary">Apply</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+  <div class="row mb-2">
+    <div id="manual-planning-toolbar" class="col-auto align-self-end mb-2">
+      <button id="add-row-btn" class="btn btn-sm btn-outline-primary">Add Row</button>
+    </div>
+  </div>
+  <div id="planning-grid"></div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<link href="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3.1/dist/css/tabulator.min.css" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3.1/dist/js/tabulator.min.js"></script>
+<script>
+(function(){
+  // ---- Context from server ----
+  const apiURL         = "{{ api_url }}";          // /api/bps/grid/
+  const updateURL      = "{{ update_url }}";       // /api/bps/grid-update/
+  const layoutId       = {{ layout_year.pk }};
+  const buckets        = {{ buckets_js|safe }};
+  const kfCodes        = {{ kf_codes|safe }};
+  const headerDrivers  = {{ header_drivers_js|safe }}; // [{key,label,choices:[{id,name}]}...]
+  const rowDrivers     = {{ row_drivers_js|safe }};
+  const headerDefaults = {{ header_defaults_js|safe }};
+  // Only used if those models appear as row dims
+  const services  = {{ services_js|safe }};
+  const orgUnits  = {{ org_units_js|safe }};
+  // ---- Utilities ----
+  const toMap = (rows, valueKey, labelKey) =>
+    rows.reduce((acc, r) => (acc[r[valueKey]] = r[labelKey], acc), {});
+  const orgUnitMap = toMap(orgUnits, "code", "name");
+  const serviceMap = toMap(services, "code", "name");
+  const driverMaps = {};
+  rowDrivers.forEach(d => { driverMaps[d.key] = toMap(d.choices, "id", "name"); });
+  const headerMaps = {};
+  headerDrivers.forEach(d => { headerMaps[d.key] = toMap(d.choices, "id", "name"); });
+  // Buckets → first period mapping (e.g., "Q1" -> "01", "01" -> "01")
+  const bucketFirstPeriodMap = Object.fromEntries(
+    buckets.map(b => [b.code, (b.periods && b.periods[0]) || b.code])
+  );
+  // Which special dims are present as row columns?
+  const rowKeys = rowDrivers.map(d => d.key);
+  const hasOrgUnitCol = rowKeys.includes("orgunit");
+  const hasServiceCol = rowKeys.includes("service");
+  // ---- Tabulator helpers ----
+  const listEditorParams = (valuesMap) => ({
+    values: valuesMap,
+    autocomplete: true,
+    listOnEmpty: true,
+    allowEmpty: true,
+    clearable: true,
+    sortValuesList: "asc",
+    verticalNavigation: "table",
+  });
+  const listHeaderFilterParams = (valuesMap) => ({
+    values: valuesMap,
+    autocomplete: true,
+    listOnEmpty: true,
+    clearable: true,
+  });
+  // ---- Columns: only the configured row dims (lead columns) ----
+  const dimCols = [];
+  if (hasOrgUnitCol) {
+    dimCols.push({
+      title: "Org Unit",
+      field: "org_unit_code",            // API returns *_code for row dims
+      width: 220,
+      frozen: true,
+      editor: "list",
+      editorParams: listEditorParams(orgUnitMap),
+      formatter: "lookup",
+      formatterParams: orgUnitMap,
+      headerFilter: "list",
+      headerFilterParams: listHeaderFilterParams(orgUnitMap),
+      headerTooltip: "Start typing to search Org Units",
+    });
+  }
+  if (hasServiceCol) {
+    dimCols.push({
+      title: "Service",
+      field: "service_code",
+      width: 220,
+      editor: "list",
+      editorParams: listEditorParams(serviceMap),
+      formatter: "lookup",
+      formatterParams: serviceMap,
+      headerFilter: "list",
+      headerFilterParams: listHeaderFilterParams(serviceMap),
+      headerTooltip: "Start typing to search Services",
+    });
+  }
+  // Other row dims (e.g., position, skill, internalorder, ...)
+  dimCols.push(
+    ...rowDrivers
+      .filter(d => d.key !== "orgunit" && d.key !== "service")
+      .map(d => ({
+        title: d.label,
+        field: `${d.key}_code`,
+        width: 180,
+        editor: "list",
+        editorParams: listEditorParams(driverMaps[d.key] || {}),
+        formatter: "lookup",
+        formatterParams: driverMaps[d.key] || {},
+        headerFilter: "list",
+        headerFilterParams: listHeaderFilterParams(driverMaps[d.key] || {}),
+        headerTooltip: `Search ${d.label}`,
+      }))
+  );
+  // Value columns
+  const valueCols = buckets.flatMap(b =>
+    kfCodes.map(kf => ({
+      title: `${b.name} ${kf}`,
+      field: `${b.code}_${kf}`,
+      editor: "number",
+      hozAlign: "right",
+      bottomCalc: "sum",
+      formatter: "money",
+      formatterParams: { symbol: "", precision: 2 }
+    }))
+  );
+  // ---- Header selection state & widgets ----
+  function readHeaderSelections() {
+    const selected = {};
+    document.querySelectorAll(".header-select").forEach(sel => {
+      const key = sel.dataset.key;
+      const val = sel.value || "";
+      selected[key] = val || null;  // store as PK or null
+    });
+    return selected;
+  }
+  function setHeaderDefaults() {
+    Object.entries(headerDefaults || {}).forEach(([key, val]) => {
+      const el = document.getElementById(`hdr-${key}`);
+      if (el && val != null) el.value = String(val);
+    });
+  }
+  function buildAjaxParams() {
+    const params = { layout: layoutId };
+    const hdr = readHeaderSelections();
+    // Pass header selections to the API as header_<dim>=<id>
+    Object.entries(hdr).forEach(([k, v]) => {
+      if (v != null && v !== "") params[`header_${k}`] = v;
+    });
+    return params;
+  }
+  // ---- Tabulator table ----
+  const table = new Tabulator("#planning-grid", {
+    layout: "fitColumns",
+    pagination: "local",
+    paginationSize: 50,
+    ajaxURL: apiURL,
+    ajaxConfig: { credentials: "include" },
+    ajaxParams: buildAjaxParams(),      // initial load uses header defaults if any
+    // /api/bps/grid/ returns a plain array of rows
+    ajaxResponse: (_url, _params, res) => res,
+    columns: [...dimCols, ...valueCols],
+    history: true,
+    validationMode: "highlight",
+  });
+  // ---- Wire header Apply
+  setHeaderDefaults();
+  const btnApply = document.getElementById("btn-apply-headers");
+  if (btnApply) {
+    btnApply.addEventListener("click", (e) => {
+      e.preventDefault();
+      table.setData(apiURL, buildAjaxParams());
+    });
+  }
+  // ---- Add Row
+  const blankRow = (() => {
+    const base = {};
+    if (hasOrgUnitCol) base["org_unit_code"] = null;
+    if (hasServiceCol) base["service_code"] = null;
+    rowDrivers
+      .filter(d => d.key !== "orgunit" && d.key !== "service")
+      .forEach(d => { base[`${d.key}_code`] = null; });
+    buckets.forEach(b => {
+      kfCodes.forEach(kf => { base[`${b.code}_${kf}`] = null; });
+    });
+    return base;
+  })();
+  document.getElementById("add-row-btn").addEventListener("click", async () => {
+    try {
+      const row = await table.addRow({ ...blankRow }, true);
+      // focus first lead column if any
+      if (dimCols.length) {
+        row.getCell(dimCols[0].field).edit();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  });
+  // ---- Save Changes
+  document.getElementById("btn-save").addEventListener("click", () => {
+    const editedCells = table.getEditedCells();
+    // Only numeric cells (value columns) constitute a change to persist
+    const valueCells = editedCells.filter(c => {
+      const f = c.getField();
+      return typeof f === "string" && f.includes("_"); // e.g. "01_COST"
+    });
+    if (!valueCells.length) {
+      alert("No numeric changes to save.");
+      return;
+    }
+    const headerSelected = readHeaderSelections();
+    const updates = [];
+    const missingOrgRows = new Set();
+    for (const cell of valueCells) {
+      const row = cell.getRow();
+      const d = row.getData();
+      // Resolve period from bucket
+      const [bucketCode, kf] = cell.getField().split("_");
+      const period = bucketFirstPeriodMap[bucketCode] || bucketCode;
+      // Base update payload
+      const base = { layout: layoutId };
+      // OrgUnit (required for session resolution)
+      const orgFromRow = hasOrgUnitCol ? d.org_unit_code : null;
+      const orgFromHdr = headerSelected.orgunit || null;
+      base.org_unit = orgFromRow || orgFromHdr || null;
+      if (!base.org_unit) {
+        // keep note of row index, we will warn after loop
+        missingOrgRows.add(row.getPosition(true));
+        continue;
+      }
+      // Service (optional)
+      const svcFromRow = hasServiceCol ? d.service_code : null;
+      const svcFromHdr = headerSelected.service || null;
+      base.service = svcFromRow || svcFromHdr || null;
+      // Row dims (other than orgunit/service)
+      rowDrivers
+        .filter(dr => dr.key !== "orgunit" && dr.key !== "service")
+        .forEach(dr => { base[dr.key] = d[`${dr.key}_code`] ?? null; });
+      // Header dims (other than orgunit/service)
+      headerDrivers
+        .filter(hd => hd.key !== "orgunit" && hd.key !== "service")
+        .forEach(hd => { base[hd.key] = headerSelected[hd.key] ?? null; });
+      updates.push({
+        ...base,
+        period,
+        key_figure: kf,
+        value: cell.getValue(),
+      });
+    }
+    if (!updates.length) {
+      if (missingOrgRows.size) {
+        alert(
+          "Org Unit is required (from header or row) before saving.\nRows: " +
+          [...missingOrgRows].join(", ")
+        );
+      } else {
+        alert("No valid changes to save.");
+      }
+      return;
+    }
+    fetch(updateURL, {
+      method: "PATCH",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": getCookie("csrftoken"),
+      },
+      body: JSON.stringify({ layout: layoutId, updates }),
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        const hasErrors = Array.isArray(data.errors) && data.errors.length > 0;
+        if (res.status === 207 || hasErrors) {
+          const msg = [
+            "Some updates failed:",
+            ...(data.errors || []).slice(0, 10).map(e => `• ${e.error}`),
+            (data.errors || []).length > 10 ? `…and ${data.errors.length - 10} more` : ""
+          ].join("\n");
+          alert(msg);
+          table.replaceData(); // refresh view
+          return;
+        }
+        if (!res.ok) {
+          throw new Error(data.detail || "Save failed");
+        }
+        alert(`All changes saved. Updated ${data.updated ?? "some"} cells.`);
+        table.setData(apiURL, buildAjaxParams());
+      })
+      .catch((err) => {
+        console.error(err);
+        alert("Save failed.");
+      });
+  });
+  // ---- CSRF helper ----
   function getCookie(name) {
     let v = null;
     document.cookie.split(';').forEach(c => {
@@ -1989,7 +2443,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
   document.getElementById('select-form').addEventListener('submit', e=>{
     e.preventDefault();
     let [l,y,v] = document.getElementById('layout').value.split('|');
-    window.location.href = `{% url 'bps:manual-planning' 0 0 0 %}`
+    window.location.href = `{% url 'bps:manual_planning' 0 0 0 %}`
       .replace('/0/0/0/', `/${l}/${y}/${v}/`);
   });
 </script>
@@ -2014,39 +2468,114 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
 {% load crispy_forms_tags %}
 {% block content %}
 <div class="container my-4">
-  <h1>Planning Functions</h1>
-  <form method="post" class="mb-4">{% csrf_token %}
-    {{ form|crispy }}
-  </form>
-  <table class="table table-striped">
-    <thead>
-      <tr>
-        <th>Name</th>
-        <th>Layout</th>
-        <th>Type</th>
-        <th>Parameters (JSON)</th>
-        <th>Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for fn in functions %}
-      <tr>
-        <td>{{ fn.name }}</td>
-        <td>{{ fn.layout.code }}</td>
-        <td>{{ fn.get_function_type_display }}</td>
-        <td><code>{{ fn.parameters }}</code></td>
-        <td>
-          <a href="{% url 'bps:run_function' fn.pk sess_id=fn.pk %}" class="btn btn-sm btn-primary">
-            Run
-          </a>
-        </td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="5">No planning functions defined.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="mb-0">Planning Functions</h1>
+    <a href="{% url 'bps:dashboard' %}" class="btn btn-outline-secondary">← Back to Dashboard</a>
+  </div>
+  <div class="card mb-4">
+    <div class="card-header">Add / Edit Function</div>
+    <div class="card-body">
+      <form method="post" class="mb-0">{% csrf_token %}
+        {{ form|crispy }}
+      </form>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">Defined Functions</div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-striped table-hover mb-0 align-middle">
+          <thead class="table-light">
+            <tr>
+              <th>Name</th>
+              <th>Layout</th>
+              <th>Type</th>
+              <th>Parameters (JSON)</th>
+              <th class="text-end">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for fn in functions %}
+              <tr>
+                <td class="fw-semibold">{{ fn.name }}</td>
+                <td><code>{{ fn.layout.code }}</code></td>
+                <td>{{ fn.get_function_type_display }}</td>
+                <td><code class="small">{{ fn.parameters|default:"{}" }}</code></td>
+                <td class="text-end">
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-primary"
+                    data-bs-toggle="modal"
+                    data-bs-target="#runModal"
+                    data-fn-id="{{ fn.id }}"
+                    data-fn-name="{{ fn.name }}"
+                  >
+                    Run…
+                  </button>
+                </td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="5" class="text-muted text-center py-4">No planning functions defined.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 </div>
+<div class="modal fade" id="runModal" tabindex="-1" aria-labelledby="runModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="runModalLabel">Run Function</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-2">
+          <div class="form-text">Function</div>
+          <div id="run-fn-name" class="fw-semibold"></div>
+        </div>
+        <label for="run-session-id" class="form-label">Session ID</label>
+        <input type="number" min="1" class="form-control" id="run-session-id" placeholder="Enter PlanningSession ID">
+        <div class="form-text">
+          Tip: open <a href="{% url 'bps:session_list' %}" target="_blank">Sessions</a> in a new tab to copy the ID.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="run-confirm-btn">Run</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script>
+(function(){
+  // URL template like /functions/run/0/0/, replace with real ids at runtime
+  const RUN_URL_TEMPLATE = "{% url 'bps:run_function' 0 0 %}";
+  const runModalEl = document.getElementById('runModal');
+  const fnNameEl   = document.getElementById('run-fn-name');
+  const sessInput  = document.getElementById('run-session-id');
+  const confirmBtn = document.getElementById('run-confirm-btn');
+  let currentFnId = null;
+  runModalEl.addEventListener('show.bs.modal', event => {
+    const btn = event.relatedTarget;
+    currentFnId = btn.getAttribute('data-fn-id');
+    const fnName = btn.getAttribute('data-fn-name') || '';
+    fnNameEl.textContent = fnName;
+    sessInput.value = '';
+    setTimeout(()=>sessInput.focus(), 200);
+  });
+  confirmBtn.addEventListener('click', () => {
+    const sessId = (sessInput.value || '').trim();
+    if (!sessId) { sessInput.focus(); return; }
+    // Build /functions/run/<fn>/<session>/
+    const url = RUN_URL_TEMPLATE.replace('/0/0/', `/${currentFnId}/${sessId}/`);
+    window.location.href = url;
+  });
+})();
+</script>
 {% endblock %}
 ```
 
@@ -2283,6 +2812,7 @@ from .views.autocomplete import (
     OrgUnitAutocomplete, CBUAutocomplete,
     AccountAutocomplete, InternalOrderAutocomplete,
     UnitOfMeasureAutocomplete, LayoutYearAutocomplete,
+    ServiceAutocomplete, KeyFigureAutocomplete, VersionAutocomplete,
 )
 app_name = "bps"
 urlpatterns = [
@@ -2318,10 +2848,6 @@ urlpatterns = [
     path("data-requests/<uuid:pk>/",     DataRequestDetailView.as_view(),     name="data_request_detail"),
     path("requests/<uuid:request_id>/facts/", FactListView.as_view(),            name="fact_list"),
     path("variables/",      VariableListView.as_view(),      name="variable_list"),
-    path("sessions/",       PlanningSessionListView.as_view(),   name="session_list"),
-    path("sessions/<int:session_id>/advance/",
-         AdvanceStageView.as_view(),                            name="advance_stage"),
-    path("sessions/<int:pk>/", PlanningSessionDetailView.as_view(), name="session_detail"),
     path("autocomplete/layout/",      LayoutAutocomplete.as_view(),      name="layout-autocomplete"),
     path("autocomplete/contenttype/", ContentTypeAutocomplete.as_view(), name="contenttype-autocomplete"),
     path("autocomplete/year/",        YearAutocomplete.as_view(),        name="year-autocomplete"),
@@ -2332,6 +2858,9 @@ urlpatterns = [
     path("autocomplete/internalorder/", InternalOrderAutocomplete.as_view(), name="internalorder-autocomplete"),
     path("autocomplete/uom/",         UnitOfMeasureAutocomplete.as_view(), name="uom-autocomplete"),
     path("autocomplete/layoutyear/",  LayoutYearAutocomplete.as_view(),   name="layoutyear-autocomplete"),
+    path("autocomplete/service/",      ServiceAutocomplete.as_view(),    name="service-autocomplete"),
+    path("autocomplete/keyfigure/",    KeyFigureAutocomplete.as_view(),  name="keyfigure-autocomplete"),
+    path("autocomplete/version/",      VersionAutocomplete.as_view(),    name="version-autocomplete"),
 ]
 ```
 
@@ -2351,7 +2880,24 @@ from ..models.models import (
     CBU,
     UnitOfMeasure,
     PlanningLayoutYear,
+    KeyFigure
 )
+from ..models.models_dimension import Service, Version
+class ServiceAutocomplete(Select2QuerySetView):
+    def get_queryset(self):
+        qs = Service.objects.filter(is_active=True)
+        if self.q: qs = qs.filter(Q(code__icontains=self.q)|Q(name__icontains=self.q))
+        return qs
+class KeyFigureAutocomplete(Select2QuerySetView):
+    def get_queryset(self):
+        qs = KeyFigure.objects.all()
+        if self.q: qs = qs.filter(Q(code__icontains=self.q)|Q(name__icontains=self.q))
+        return qs
+class VersionAutocomplete(Select2QuerySetView):
+    def get_queryset(self):
+        qs = Version.objects.all()
+        if self.q: qs = qs.filter(Q(code__icontains=self.q)|Q(name__icontains=self.q))
+        return qs
 class LayoutAutocomplete(Select2QuerySetView):
     def get_queryset(self):
         qs = PlanningLayout.objects.all()
@@ -2621,6 +3167,7 @@ from bps.models.models import (
     PlanningFact, Formula, Constant, SubFormula,
     FormulaRun, FormulaRunEntry, ReferenceData, Period
 )
+from bps.models.models import KeyFigure, DataRequest
 _AGG_FUNCS = {
     'SUM': Sum,
     'AVG': Avg,
@@ -2802,6 +3349,36 @@ class FormulaExecutor:
             except Exception:
                 continue
         return self._aggregate_or_fetch_for_period(kf, dims, self.period)
+    def _replace_reference_data(self, expr: str, _dims_map) -> str:
+        def repl(m):
+            name = m.group(1)
+            tail = m.group(2)
+            return f"__refdata__('{name}', {{{tail}}})"
+        return self._re_refdata.sub(repl, expr)
+    def _get_record(self, kf_code: str, dims: dict, create: bool):
+        period = Period.objects.get(code=self.period)
+        kf     = KeyFigure.objects.get(code=kf_code)
+        known = {}
+        extra = {}
+        for k, inst in dims.items():
+            if k in ("orgunit", "org_unit"):   known["org_unit"] = inst
+            elif k in ("service",):            known["service"]  = inst
+            elif k in ("account",):            known["account"]  = inst
+            else:                              extra[k] = inst.pk
+        base = dict(session=self.session, period=period, key_figure=kf, **known)
+        fact = PlanningFact.objects.filter(**base, extra_dimensions_json=extra).first()
+        if fact:
+            return fact
+        if not create:
+            return PlanningFact(**base, extra_dimensions_json=extra, value=Decimal("0"))
+        return PlanningFact.objects.create(
+            request=self.session.requests.order_by('-created_at').first() or
+                    DataRequest.objects.create(session=self.session, description="Formula write"),
+            version=self.session.layout_year.version,
+            year=self.session.layout_year.year,
+            uom=None, ref_uom=None,
+            extra_dimensions_json=extra, **base
+        )
 ```
 
 ### `views/manual_planning.py`
@@ -2809,7 +3386,7 @@ class FormulaExecutor:
 from django.views.generic import TemplateView
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
-from bps.models.models import PlanningLayoutYear
+from bps.models.models_layout import PlanningLayoutYear
 from bps.models.models_dimension import Service, OrgUnit
 import json
 class ManualPlanningView(TemplateView):
@@ -2822,38 +3399,50 @@ class ManualPlanningView(TemplateView):
             year_id=year_id,
             version_id=version_id,
         )
-        grouping    = ly.period_groupings.filter(months_per_bucket=1).first()
-        raw_buckets = grouping.buckets()
-        buckets_js  = [
+        grouping = ly.period_groupings.filter(months_per_bucket=1).first()
+        raw_buckets = grouping.buckets() if grouping else []
+        buckets_js = [
             {"code": b["code"], "name": b["name"], "periods": [p.code for p in b["periods"]]}
             for b in raw_buckets
         ]
-        drivers_for_template = []
-        drivers_for_js = []
-        dynamic_dims = ly.layout_dimensions.filter(is_row=True).order_by("order")
-        for ld in dynamic_dims:
-            Model = ld.content_type.model_class()
-            qs    = Model.objects.all()
-            label = getattr(Model._meta, 'verbose_name', ld.content_type.model.title())
-            driver_data = {
-                "key":     ld.content_type.model,
-                "label":   label,
-                "choices": [{"id": o.pk, "name": str(o)} for o in qs],
-            }
-            drivers_for_template.append(driver_data)
-            drivers_for_js.append(driver_data)
+        all_dims_qs = ly.layout_dimensions.order_by("order")
+        header_dims_qs = all_dims_qs.filter(is_header=True)
+        row_dims_qs = all_dims_qs.filter(is_row=True, is_header=False)
+        def _driver_payload(qs):
+            out = []
+            for ld in qs:
+                Model = ld.content_type.model_class()
+                qs_all = Model.objects.all()
+                label = getattr(Model._meta, "verbose_name", ld.content_type.model.title())
+                out.append({
+                    "key": ld.content_type.model,
+                    "label": str(label),
+                    "choices": [{"id": o.pk, "name": str(o)} for o in qs_all],
+                })
+            return out
+        drivers_for_header = _driver_payload(header_dims_qs)
+        drivers_for_rows = _driver_payload(row_dims_qs)
+        header_defaults = {}
+        if isinstance(ly.header_dims, dict):
+            header_keys = {d["key"] for d in drivers_for_header}
+            for k, v in ly.header_dims.items():
+                if k in header_keys:
+                    header_defaults[k] = v
         services = list(Service.objects.filter(is_active=True).values("code", "name"))
         org_units = list(OrgUnit.objects.values("code", "name"))
         ctx.update({
             "layout_year": ly,
-            "buckets_js":  json.dumps(buckets_js),
-            "kf_codes":    json.dumps([kf.code for kf in ly.layout.key_figures.order_by("display_order")]),
-            "drivers_for_template": drivers_for_template,
-            "drivers_js":  json.dumps(drivers_for_js),
-            "api_url":     reverse("bps_api:planning_pivot"),
-            "update_url":  reverse("bps_api:planning_grid_update"),
+            "buckets_js": json.dumps(buckets_js),
+            "kf_codes": json.dumps([kf.code for kf in ly.layout.key_figures.order_by("display_order")]),
+            "header_drivers": drivers_for_header,
+            "header_drivers_js": json.dumps(drivers_for_header),
+            "row_drivers": drivers_for_rows,
+            "row_drivers_js": json.dumps(drivers_for_rows),
+            "header_defaults_js": json.dumps(header_defaults),
+            "api_url": reverse("bps_api:planning_grid"),
+            "update_url": reverse("bps_api:planning_grid_update"),
             "services_js": json.dumps(services),
-            "org_units_js":json.dumps(org_units),
+            "org_units_js": json.dumps(org_units),
         })
         return ctx
 ```
@@ -2874,6 +3463,7 @@ from django.views.generic import (
 )
 from django.views.generic.edit import FormMixin
 from django.forms import modelform_factory
+from ..models.models_workflow import ScenarioStep, ScenarioStage
 from ..models.models import (
     PlanningScenario, PlanningSession, PlanningStage, PlanningLayoutYear,
     PlanningLayout, Year, Version, Period,
@@ -2893,10 +3483,16 @@ class ScenarioDashboardView(TemplateView):
         sessions = PlanningSession.objects.filter(
             scenario=scenario
         ).select_related("org_unit", "current_step__stage", "current_step__layout")
+        steps = (
+            ScenarioStep.objects
+            .filter(scenario=scenario)
+            .select_related("stage", "layout")
+            .order_by("order")
+        )
         return {
             "scenario":   scenario,
             "sessions":   sessions,
-            "steps":      scenario.steps.order_by("orderscenario__order"),
+            "steps":      steps,
             "org_units":  scenario.org_units.all(),
         }
 class DashboardView(TemplateView):
@@ -3012,7 +3608,7 @@ class PlanningSessionDetailView(FormMixin, DetailView):
             })
         kf_codes = [kf.code for kf in layout.key_figures.all()]
         from django.urls import reverse
-        api_url = reverse('bps_api:bps_planning_pivot')
+        api_url = reverse('bps_api:planning_pivot')
         dr    = sess.requests.order_by('-created_at').first()
         facts = sess.planningfact_set.filter(request=dr) if dr else []
         ctx = super().get_context_data(**ctx)
@@ -3034,7 +3630,7 @@ class PlanningSessionDetailView(FormMixin, DetailView):
                 {"url": reverse("bps:session_list"), "title": "Sessions"},
                 {"url": self.request.path,           "title": sess.org_unit.name},
             ],
-            "can_advance":  self.request.user.is_staff and sess.scenario.steps.filter(order__gt=step.order).exists(),
+            "can_advance":  self.request.user.is_staff and ScenarioStep.objects.filter(scenario=sess.scenario, order__gt=step.order).exists(),
         })
         return ctx
     def post(self, request, *args, **kwargs):
@@ -3056,9 +3652,10 @@ class PlanningSessionDetailView(FormMixin, DetailView):
         return self.get(request, *args, **kwargs)
 class AdvanceStepView(View):
     def post(self, request, session_id):
+        from bps.models.models_workflow import ScenarioStep
         sess = get_object_or_404(PlanningSession, pk=session_id)
         current_order = sess.current_step.order
-        next_step = sess.scenario.steps.filter(order__gt=current_order).order_by("order").first()
+        next_step = ScenarioStep.objects.filter(scenario=sess.scenario, order__gt=current_order).order_by("order").first()
         if not next_step:
             messages.warning(request, "Already at final step.")
         else:
@@ -3234,7 +3831,7 @@ class VariableListView(ConstantListView):
 ### `views/views_decorator.py`
 ```python
 from rest_framework.response import Response
-from .models.models import PlanningSession
+from ..models.models import PlanningSession
 def require_stage(stage_code):
     def decorator(fn):
         def wrapped(self, request, *args, **kw):

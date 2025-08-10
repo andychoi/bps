@@ -31,7 +31,6 @@ COUNTRIES = {
 }
 
 
-
 class Command(BaseCommand):
     help = "Step 1: Load all master/reference data for cost-planning"
 
@@ -156,11 +155,30 @@ class Command(BaseCommand):
                 code=f"CBU{tier}",
                 defaults={"name": f"CBU Tier {tier}", "group": "Demo", "tier": str(tier), "is_active": True},
             )
+
+        # one CostCenter per OrgUnit (except ROOT) and 3–4 InternalOrders under each CC
         for ou in OrgUnit.objects.exclude(code="ROOT"):
-            CostCenter.objects.get_or_create(code=ou.code, defaults={"name": ou.name})
-            InternalOrder.objects.get_or_create(
-                code=ou.code, defaults={"name": ou.name, "cc_code": ou.code}
-            )
+            cc, _ = CostCenter.objects.get_or_create(code=ou.code, defaults={"name": ou.name})
+
+            # Create 3–4 IOs with codes like IO1234 and link them to this CC via cc_code
+            target_ios = random.randint(2, 4)
+
+            created = 0
+            attempts = 0
+            # Avoid rare code collisions (IOxxxx is global-unique), cap attempts for safety
+            while created < target_ios and attempts < 50:
+                attempts += 1
+                io_code = f"IO{random.randint(1000, 9999)}"
+                io, was_created = InternalOrder.objects.get_or_create(
+                    code=io_code,
+                    defaults={
+                        "name": f"{ou.name} {io_code}",
+                        "cc_code": cc.code,   # link to the cost center
+                    },
+                )
+                if was_created:
+                    created += 1
+
         self.stdout.write(self.style.SUCCESS("✔️ CBUs, CostCenters & InternalOrders"))
 
         # Services (5 per active CBU, attached to ROOT for simplicity)

@@ -72,7 +72,11 @@ class KeyFigure(models.Model):
     name = models.CharField(max_length=200)
     is_percent = models.BooleanField(default=False)
     default_uom = models.ForeignKey(UnitOfMeasure, null=True, on_delete=models.SET_NULL)
-
+    display_decimals = models.PositiveSmallIntegerField(
+        default=2,
+        help_text="Number of decimal places to show for this key figure in grids and totals."
+    )
+    
     def __str__(self):
         return self.code
 
