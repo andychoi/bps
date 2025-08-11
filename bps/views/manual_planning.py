@@ -1,7 +1,8 @@
+# bps/views/manual_planning.py
 from django.views.generic import TemplateView
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
-from bps.models.models_layout import PlanningLayoutYear
+from bps.models.models_layout import PlanningLayoutYear, LayoutDimensionOverride
 from bps.models.models_dimension import Service, OrgUnit
 from bps.models.models import KeyFigure
 import json
@@ -35,53 +36,53 @@ class ManualPlanningView(TemplateView):
         # ---- Split layout dimensions by placement ----
         # Header selections: BW-BPS style fixed slice
         # Row (lead) columns: editable per-row dimensions
-        all_dims_qs = ly.layout_dimensions.order_by("order")
+        # ---- Split layout dimensions by placement (template-level) ----
+        all_dims_qs    = ly.layout.dimensions.select_related("content_type").order_by("order")
         header_dims_qs = all_dims_qs.filter(is_header=True)
-        row_dims_qs = all_dims_qs.filter(is_row=True, is_header=False)
+        row_dims_qs    = all_dims_qs.filter(is_row=True)
+
+        def _choices_for(dim):
+            Model = dim.content_type.model_class()
+            qs = Model.objects.all()
+
+            # Apply per-year overrides (IDs or codes)
+            ov = LayoutDimensionOverride.objects.filter(layout_year=ly, dimension=dim).first()
+            if ov and ov.allowed_values:
+                pks   = [v for v in ov.allowed_values if isinstance(v, int)]
+                codes = [v for v in ov.allowed_values if isinstance(v, str)]
+                if pks:
+                    qs = qs.filter(pk__in=pks)
+                if codes and hasattr(Model, "code"):
+                    qs = qs.filter(code__in=codes)
+
+            return [{"id": o.pk, "name": str(o)} for o in qs]
 
         def _driver_payload(qs):
-            """
-            Build a generic payload for either header or row dimensions:
-            [
-              {
-                key: "orgunit" | "service" | "position" | ... (content_type.model)
-                label: readable label (Model.verbose_name or fallback),
-                choices: [{id, name}]
-              },
-              ...
-            ]
-            """
             out = []
             for ld in qs:
                 Model = ld.content_type.model_class()
-                # NOTE: you can inject filter_criteria/allowed_values here later if needed
-                qs_all = Model.objects.all()
-                # label prefers model verbose_name; fallback to content_type.model title-cased
                 label = getattr(Model._meta, "verbose_name", ld.content_type.model.title())
-                out.append(
-                    {
-                        "key": ld.content_type.model,  # e.g. "orgunit", "service", "position", ...
-                        "label": str(label),
-                        "choices": [{"id": o.pk, "name": str(o)} for o in qs_all],
-                    }
-                )
+                out.append({
+                    "key":     ld.content_type.model,     # e.g. "orgunit"
+                    "label":   str(label),
+                    "choices": _choices_for(ld),
+                })
             return out
 
         drivers_for_header = _driver_payload(header_dims_qs)
-        drivers_for_rows = _driver_payload(row_dims_qs)
+        drivers_for_rows   = _driver_payload(row_dims_qs)
 
         # ---- Default header selections from persisted layout-year config ----
         header_defaults = {}
         if isinstance(ly.header_dims, dict):
             header_keys = {d["key"] for d in drivers_for_header}
             for k, v in ly.header_dims.items():
-                # only keep keys that exist as header dims (ignore legacy/custom keys)
-                if k in header_keys:
+                if k in header_keys:          # only keep keys that exist in current header dims
                     header_defaults[k] = v
 
         # ---- Key figures for this layout (order respected) ----
-        pkf_qs = ly.layout.key_figures.order_by("display_order")
-        kf_codes = [pkf.code for pkf in pkf_qs]
+        pkf_qs   = ly.layout.key_figures.select_related("key_figure").order_by("display_order", "id")
+        kf_codes = [pkf.key_figure.code for pkf in pkf_qs]
 
         # Per-key-figure UI precision (display_decimals) for cells & totals
         # (If a KF code is missing here, the client should fall back to 2.)
@@ -93,6 +94,35 @@ class ManualPlanningView(TemplateView):
         # ---- Lookup data for common dims (used if they appear as row dims) ----
         services = list(Service.objects.filter(is_active=True).values("code", "name"))
         org_units = list(OrgUnit.objects.values("code", "name"))
+
+        # ---- Row grouping fields (if any) ----
+        grouping_dims_qs = all_dims_qs.filter(group_priority__isnull=False).order_by("group_priority")
+        if not grouping_dims_qs.exists():
+            grouping_dims_qs = all_dims_qs.filter(is_row=True).order_by("order")
+
+        def _field_for_key(key: str) -> str:
+            if key == "orgunit":
+                return "org_unit_code"
+            if key == "service":
+                return "service_code"
+            return f"{key}_code"
+        
+        # Only allow grouping by fields that actually exist as ROW dimensions,
+        # otherwise everything will be "(blank)".
+        row_field_candidates = {
+            _field_for_key(d["key"]) for d in _driver_payload(row_dims_qs)
+        }
+
+        if grouping_dims_qs.exists():
+            configured_fields = [_field_for_key(ld.content_type.model) for ld in grouping_dims_qs]
+            row_group_fields = [f for f in configured_fields if f in row_field_candidates]
+        else:
+            row_group_fields = []  # <— NO GROUPING by default
+
+        # Read "start open" off layout_year first, then layout, else default False
+        row_group_start_open = bool(
+            getattr(ly, "group_start_open", getattr(ly.layout, "group_start_open", False))
+        )
 
         ctx.update(
             {
@@ -115,6 +145,10 @@ class ManualPlanningView(TemplateView):
                 # Only needed if the corresponding dim is used as a row dim
                 "services_js": json.dumps(services),
                 "org_units_js": json.dumps(org_units),
+
+                # "row_group_enabled": row_group_enabled,
+                "row_group_fields_js": json.dumps(row_group_fields),
+                "row_group_start_open_js": json.dumps(row_group_start_open),           
             }
         )
         return ctx

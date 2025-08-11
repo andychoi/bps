@@ -1,7 +1,7 @@
 # views.py
 from uuid import UUID
 import json
-
+from django.core.paginator import Paginator
 from django.shortcuts import get_object_or_404, redirect, render
 from django.http import HttpResponse
 from django.urls import reverse, reverse_lazy
@@ -182,6 +182,8 @@ class PlanningSessionDetailView(FormMixin, DetailView):
         return kwargs
 
     def get_context_data(self, **ctx):
+        ctx = super().get_context_data(**ctx)
+
         sess   = self.object
         # 1) grab the current step & stage
         step   = sess.current_step
@@ -192,41 +194,93 @@ class PlanningSessionDetailView(FormMixin, DetailView):
         layout  = ly.layout
         version = ly.version
 
-        # 3) pick the MONTHLY grouping by default
+        # 3) pick the MONTHLY grouping by default (fallback to empty if not defined)
         grouping = ly.period_groupings.filter(months_per_bucket=1).first()
-        buckets  = grouping.buckets()
+        buckets  = grouping.buckets() if grouping else []
 
-        # 4) build your “driver” dimensions (rows)
+        # 4) build “driver” dimensions (rows) from the template, then apply per-year overrides
+        row_dims = (
+            layout.dimensions
+                  .filter(is_row=True)
+                  .select_related("content_type")
+                  .order_by("order")
+        )
+
+        # map of template-dimension id -> override object
+        ov_map = {
+            ov.dimension_id: ov
+            for ov in ly.dimension_overrides.select_related("dimension__content_type")
+        }
+
         drivers = []
-        for ld in ly.layout_dimensions.filter(is_row=True).order_by('order'):
-            Model = ld.content_type.model_class()
-            qs    = Model.objects.filter(pk__in=ld.allowed_values) \
-                    if ld.allowed_values else Model.objects.all()
+        for dim in row_dims:
+            Model = dim.content_type.model_class()
+            qs = Model.objects.all()
+
+            # apply allowed_values override (IDs or codes)
+            ov = ov_map.get(dim.id)
+            if ov and ov.allowed_values:
+                pks   = [v for v in ov.allowed_values if isinstance(v, int)]
+                codes = [v for v in ov.allowed_values if isinstance(v, str)]
+                if pks:
+                    qs = qs.filter(pk__in=pks)
+                if codes and hasattr(Model, "code"):
+                    qs = qs.filter(code__in=codes)
+
             drivers.append({
-                "key":     ld.content_type.model,
-                "label":   ld.content_type.model.title(),
-                "choices": [{"id":o.pk,"name":str(o)} for o in qs],
+                "key":     dim.content_type.model,                       # e.g. "service"
+                "label":   Model._meta.verbose_name.title(),            # short, human label
+                "choices": [{"id": o.pk, "name": str(o)} for o in qs],  # UI can autocomplete
             })
 
-        # 5) pull out the key-figure codes in layout order
-        kf_codes = [kf.code for kf in layout.key_figures.all()]
-
+        # 5) key figures in display order (from template)
+        kf_codes = [
+            lkf.key_figure.code
+            for lkf in layout.key_figures.select_related("key_figure").order_by("display_order", "id")
+        ]
+        
         # 6) compute your pivot API URL
-        from django.urls import reverse
         api_url = reverse('bps_api:planning_pivot')
 
-        # 7) leave the old raw‐facts in case you still need them
-        dr    = sess.requests.order_by('-created_at').first()
-        facts = sess.planningfact_set.filter(request=dr) if dr else []
+        # 7) Raw facts: paginate on the server (default 10 rows)
+        dr = sess.requests.order_by('-created_at').first()
+        facts_qs = (
+            PlanningFact.objects.filter(request=dr)
+            if dr else PlanningFact.objects.none()
+        )
+        facts_qs = facts_qs.select_related(
+            "period", "key_figure", "uom", "service"
+        ).order_by("period__order", "key_figure__code", "service__name")
 
-        ctx = super().get_context_data(**ctx)
+        # paging params
+        try:
+            page_size = int(self.request.GET.get("page_size", 10))
+        except (TypeError, ValueError):
+            page_size = 10
+        if page_size <= 0:
+            page_size = 10
+        try:
+            page_num = int(self.request.GET.get("page", 1))
+        except (TypeError, ValueError):
+            page_num = 1
+
+        paginator = Paginator(facts_qs, page_size)
+        page_obj = paginator.get_page(page_num)
+
         ctx.update({
             "sess":         sess,
             "current_step": step,
             "stage":        stage,
             "layout":       layout,
             "dr":           dr,
-            "facts":        facts,
+            # Keep original 'facts' for backwards compatibility (current page items)
+            "facts":        page_obj.object_list,
+            # New paginated objects
+            "facts_page":   page_obj,
+            "is_paginated": page_obj.has_other_pages(),
+            "paginator":    paginator,
+            "page_size":    page_size,
+            "page_sizes":   [10, 25, 50, 100],  
             "buckets":      buckets,
             "drivers":      drivers,
             "kf_codes":     kf_codes,
@@ -238,7 +292,10 @@ class PlanningSessionDetailView(FormMixin, DetailView):
                 {"url": reverse("bps:session_list"), "title": "Sessions"},
                 {"url": self.request.path,           "title": sess.org_unit.name},
             ],
-            "can_advance":  self.request.user.is_staff and ScenarioStep.objects.filter(scenario=sess.scenario, order__gt=step.order).exists(),
+            "can_advance":  self.request.user.is_staff and ScenarioStep.objects.filter(
+                scenario=sess.scenario,
+                order__gt=step.order
+            ).exists(),
         })
         return ctx
 
@@ -270,11 +327,15 @@ class AdvanceStepView(View):
     """
     Move the session to the next ScenarioStep in order.
     """
-    def post(self, request, session_id):
-        from bps.models.models_workflow import ScenarioStep
-        sess = get_object_or_404(PlanningSession, pk=session_id)
+    def post(self, request, pk):
+        sess = get_object_or_404(PlanningSession, pk=pk)
         current_order = sess.current_step.order
-        next_step = ScenarioStep.objects.filter(scenario=sess.scenario, order__gt=current_order).order_by("order").first()
+        next_step = (
+            ScenarioStep.objects
+            .filter(scenario=sess.scenario, order__gt=current_order)
+            .order_by("order")
+            .first()
+        )
 
         if not next_step:
             messages.warning(request, "Already at final step.")
@@ -283,24 +344,41 @@ class AdvanceStepView(View):
             sess.save(update_fields=["current_step"])
             messages.success(request, f"Advanced to step: {next_step.stage.name}")
 
-        return redirect("bps:session_detail", pk=session_id)
+        return redirect("bps:session_detail", pk=pk)
 
 
 class AdvanceStageView(View):
-    def get(self, request, session_id):
-        sess = get_object_or_404(PlanningSession, pk=session_id)
-        next_stage = PlanningStage.objects.filter(
-            order__gt=sess.current_stage.order
-        ).order_by('order').first()
+    """
+    Jump to the first step of the next stage (based on current_step.stage).
+    """
+    def get(self, request, pk):
+        sess = get_object_or_404(PlanningSession, pk=pk)
+        current_stage = sess.current_step.stage
+        next_stage = (
+            PlanningStage.objects
+            .filter(order__gt=current_stage.order)
+            .order_by('order')
+            .first()
+        )
 
         if not next_stage:
             messages.warning(request, "Already at final stage.")
+            return redirect('bps:session_detail', pk=pk)
+
+        next_step = (
+            ScenarioStep.objects
+            .filter(scenario=sess.scenario, stage=next_stage)
+            .order_by('order')
+            .first()
+        )
+        if not next_step:
+            messages.warning(request, f"No step defined for stage: {next_stage.name}")
         else:
-            sess.current_stage = next_stage
-            sess.save(update_fields=['current_stage'])
+            sess.current_step = next_step
+            sess.save(update_fields=['current_step'])
             messages.success(request, f"Moved to stage: {next_stage.name}")
 
-        return redirect('bps:session_detail', pk=session_id)
+        return redirect('bps:session_detail', pk=pk)
 
 
 # ── Constants, Sub-Formulas & Formulas ───────────────────────────────────────

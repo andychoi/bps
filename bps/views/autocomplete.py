@@ -14,6 +14,7 @@ from ..models.models import (
     InternalOrder,
     CBU,
     UnitOfMeasure,
+    PriceType,
     PlanningLayoutYear,
     KeyFigure
 )

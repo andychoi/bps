@@ -88,3 +88,11 @@ class CostCenter(InfoObject):
 class InternalOrder(InfoObject):
     cc_code    = models.CharField(max_length=10, blank=True)    # SAP cost center code
 
+
+# models/models_dimension.py
+class PriceType(InfoObject):
+    """
+    Examples: LIST, NET, BURDENED, TRANSFER, BILLING
+    Keep codes short & stable, names human-friendly.
+    """
+    pass

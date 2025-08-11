@@ -45,34 +45,14 @@ class KeyFigure(models.Model):
     name = models.CharField(max_length=200)
     is_percent = models.BooleanField(default=False)
     default_uom = models.ForeignKey(UnitOfMeasure, null=True, on_delete=models.SET_NULL)
+    display_decimals = models.PositiveSmallIntegerField(
+        default=2,
+        help_text="Number of decimal places to show for this key figure in grids and totals."
+    )
     def __str__(self):
         return self.code
 from .models_layout import *
-class Period(models.Model):
-    code   = models.CharField(max_length=2, unique=True)
-    name   = models.CharField(max_length=10)
-    order  = models.PositiveSmallIntegerField()
-    def __str__(self):
-        return self.name
-class PeriodGrouping(models.Model):
-    layout_year = models.ForeignKey(PlanningLayoutYear, on_delete=models.CASCADE,
-                                    related_name='period_groupings')
-    months_per_bucket = models.PositiveSmallIntegerField(choices=[(1,'Monthly'),(3,'Quarterly'),(6,'Half-Year')])
-    label_prefix = models.CharField(max_length=5, default='')
-    class Meta:
-        unique_together = ('layout_year','months_per_bucket')
-    def buckets(self):
-        from bps.models.models import Period
-        qs = Period.objects.order_by('order')
-        months = list(qs)
-        size   = self.months_per_bucket
-        buckets = []
-        for i in range(0, 12, size):
-            group = months[i:i+size]
-            idx   = (i//size)+1
-            code  = f"{self.label_prefix}{idx}"
-            buckets.append({'code':code, 'name':code, 'periods':group})
-        return buckets
+from .models_period import *
 from .models_workflow import *
 class DataRequest(TimestampModel):
     ACTION_CHOICES = [
@@ -267,8 +247,8 @@ class ReferenceData(models.Model):
     description = models.TextField(blank=True)
     def fetch_reference_fact(self, **filters):
         return PlanningFact.objects.filter(
-            session__layout_year__version=self.source_version,
-            session__layout_year__year=self.source_year,
+            session__scenario__layout_year__version=self.source_version,
+            session__scenario__layout_year__year=self.source_year,
             **filters
         ).aggregate(Sum('value'))
 class GlobalVariable(models.Model):
@@ -313,6 +293,49 @@ class FormulaRunEntry(models.Model):
     old_value  = models.DecimalField(max_digits=18, decimal_places=6)
     new_value  = models.DecimalField(max_digits=18, decimal_places=6)
     def __str__(self): return f"{self.record} :: {self.key}: {self.old_value} → {self.new_value}"
+```
+
+### `models_access.py`
+```python
+from django.conf import settings
+from django.db import models
+from django.utils import timezone
+from mptt.models import TreeForeignKey
+from .models_dimension import OrgUnit
+User = settings.AUTH_USER_MODEL
+class OrgUnitAccess(models.Model):
+    EXACT = "EXACT"
+    SUBTREE = "SUBTREE"
+    SCOPE_CHOICES = [(EXACT, "Exact"), (SUBTREE, "Subtree")]
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="ou_access")
+    org_unit = TreeForeignKey(OrgUnit, on_delete=models.CASCADE, related_name="user_access")
+    scope = models.CharField(max_length=10, choices=SCOPE_CHOICES, default=SUBTREE)
+    can_edit = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        unique_together = ("user", "org_unit", "scope")
+    def __str__(self):
+        return f"{self.user} → {self.org_unit} [{self.scope}]"
+class Delegation(models.Model):
+    delegator = models.ForeignKey(User, on_delete=models.CASCADE, related_name="delegations_out")
+    delegatee = models.ForeignKey(User, on_delete=models.CASCADE, related_name="delegations_in")
+    starts_at = models.DateTimeField(null=True, blank=True)
+    ends_at = models.DateTimeField(null=True, blank=True)
+    active = models.BooleanField(default=True)
+    note = models.CharField(max_length=200, blank=True)
+    class Meta:
+        unique_together = ("delegator", "delegatee")
+    def is_active(self):
+        now = timezone.now()
+        if not self.active:
+            return False
+        if self.starts_at and now < self.starts_at:
+            return False
+        if self.ends_at and now > self.ends_at:
+            return False
+        return True
+    def __str__(self):
+        return f"{self.delegator} → {self.delegatee}"
 ```
 
 ### `models_dimension.py`
@@ -375,6 +398,8 @@ class CostCenter(InfoObject):
     pass
 class InternalOrder(InfoObject):
     cc_code    = models.CharField(max_length=10, blank=True)
+class PriceType(InfoObject):
+    pass
 ```
 
 ### `models_function.py`
@@ -387,6 +412,22 @@ from django.db import models, transaction
 from django.db import models, transaction
 from django.contrib.contenttypes.models import ContentType
 from .models_dimension import Year, Version, OrgUnit
+SHORT_LABELS = {
+    "orgunit": "OU",
+    "service": "Srv",
+    "internalorder": "IO",
+    "position": "Pos",
+    "skill": "Skill",
+}
+EXCLUDE_FROM_CONTEXT = {"year", "version", "period"}
+def _resolve_value(Model, raw):
+    if not raw:
+        return None
+    if isinstance(raw, int):
+        return Model.objects.filter(pk=raw).first()
+    if hasattr(Model, "code"):
+        return Model.objects.filter(code=raw).first()
+    return Model.objects.filter(pk=raw).first()
 class PlanningLayout(models.Model):
     code = models.CharField(max_length=100, unique=True)
     name = models.CharField(max_length=200)
@@ -394,53 +435,108 @@ class PlanningLayout(models.Model):
     default = models.BooleanField(default=False)
     def __str__(self):
         return self.code
+class PlanningLayoutDimension(models.Model):
+    layout        = models.ForeignKey(
+        PlanningLayout, related_name="dimensions", on_delete=models.CASCADE
+    )
+    content_type  = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    is_row        = models.BooleanField(default=False)
+    is_column     = models.BooleanField(default=False)
+    is_header     = models.BooleanField(
+        default=False,
+        help_text="If true, UI should render a header selector for this dimension."
+    )
+    order         = models.PositiveSmallIntegerField(default=0,
+                      help_text="Defines the sequence in the grid")
+    class Meta:
+        ordering = ["order", "id"]
+        unique_together = ("layout", "content_type", "is_row", "is_column", "is_header")
 class PlanningLayoutYear(models.Model):
     layout = models.ForeignKey(PlanningLayout, on_delete=models.CASCADE, related_name='per_year')
     year   = models.ForeignKey(Year, on_delete=models.CASCADE)
     version= models.ForeignKey(Version, on_delete=models.CASCADE)
     org_units = models.ManyToManyField(OrgUnit, blank=True)
-    row_dims  = models.ManyToManyField(ContentType, blank=True)
-    header_dims = models.JSONField(default=dict,
-                      help_text="e.g. {'Company':'ALL','Region':'EMEA'}")
+    header_dims = models.JSONField(default=dict, help_text="e.g. {'Company':3,'Region':'NA'}")
     class Meta:
         unique_together = ('layout','year','version')
     def __str__(self):
         return f"{self.layout.name} – {self.year.code} / {self.version.code}"
-class PlanningDimension(models.Model):
-    layout = models.ForeignKey(PlanningLayout, related_name="dimensions", on_delete=models.CASCADE)
-    name = models.CharField(max_length=100)
-    label = models.CharField(max_length=100)
-    is_row = models.BooleanField(default=False)
-    is_column = models.BooleanField(default=False)
-    is_filter = models.BooleanField(default=True)
-    is_editable = models.BooleanField(default=False)
-    required = models.BooleanField(default=True)
-    data_source = models.CharField(max_length=100)
-    is_navigable = models.BooleanField(default=False,
-        help_text="If true, UI should render Prev/Next controls for this dimension"
-    )
-    display_order = models.PositiveSmallIntegerField(default=0)
-class PlanningLayoutDimension(models.Model):
-    layout_year    = models.ForeignKey(PlanningLayoutYear,
-                                       on_delete=models.CASCADE,
-                                       related_name="layout_dimensions")
-    content_type   = models.ForeignKey(ContentType,
-                                       on_delete=models.CASCADE)
-    is_row         = models.BooleanField(default=False)
-    is_column      = models.BooleanField(default=False)
-    order          = models.PositiveSmallIntegerField(default=0,
-                        help_text="Defines the sequence in the grid")
-    allowed_values = models.JSONField(blank=True, default=list,
-                        help_text="List of allowed PKs or codes")
-    filter_criteria= models.JSONField(blank=True, default=dict,
-                        help_text="Extra filters to apply when building headers")
+    def header_defaults(self):
+        base = dict(self.header_dims or {})
+        return base
+    def header_pairs(self, *, use_short_labels=True, short_values=True, exclude=EXCLUDE_FROM_CONTEXT):
+        pairs = []
+        defaults = self.header_defaults()
+        dims = self.layout.dimensions.filter(is_header=True).select_related("content_type").order_by("order")
+        for dim in dims:
+            ct = dim.content_type
+            key = ct.model
+            if key in (exclude or set()):
+                continue
+            Model = ct.model_class()
+            label = SHORT_LABELS.get(key, Model._meta.verbose_name.title() if not use_short_labels else key[:3].title())
+            raw = defaults.get(key)
+            inst = _resolve_value(Model, raw)
+            if not inst:
+                val = "All"
+            else:
+                val = getattr(inst, "code", None) or getattr(inst, "name", str(inst))
+            pairs.append((label, val))
+        return pairs
+    def header_string(self, exclude=EXCLUDE_FROM_CONTEXT):
+        return " · ".join(f"{k}: {v}" for k, v in self.header_pairs(exclude=exclude))
+class LayoutDimensionOverride(models.Model):
+    layout_year      = models.ForeignKey(PlanningLayoutYear, related_name="dimension_overrides", on_delete=models.CASCADE)
+    dimension = models.ForeignKey(PlanningLayoutDimension, related_name="overrides", on_delete=models.CASCADE)
+    allowed_values   = models.JSONField(blank=True, default=list)
+    filter_criteria  = models.JSONField(blank=True, default=dict)
+    header_selection = models.PositiveIntegerField(null=True, blank=True)
+    order_override   = models.PositiveSmallIntegerField(null=True, blank=True)
+    class Meta:
+        unique_together = ("layout_year", "dimension")
 class PlanningKeyFigure(models.Model):
-    layout = models.ForeignKey(PlanningLayout, related_name="key_figures", on_delete=models.CASCADE)
-    code = models.CharField(max_length=100)
-    label = models.CharField(max_length=100)
-    is_editable = models.BooleanField(default=True)
-    is_computed = models.BooleanField(default=False)
-    formula = models.TextField(blank=True)
+    layout        = models.ForeignKey(PlanningLayout, related_name="key_figures", on_delete=models.CASCADE)
+    key_figure    = models.ForeignKey('bps.KeyFigure', on_delete=models.CASCADE)
+    is_editable   = models.BooleanField(default=True)
+    is_computed   = models.BooleanField(default=False)
+    formula       = models.TextField(blank=True)
+    display_order = models.PositiveSmallIntegerField(default=0)
+    class Meta:
+        ordering = ["display_order", "id"]
+        unique_together = ("layout", "key_figure")
+```
+
+### `models_period.py`
+```python
+from django.db import models, transaction
+class Period(models.Model):
+    code   = models.CharField(max_length=2, unique=True)
+    name   = models.CharField(max_length=10)
+    order  = models.PositiveSmallIntegerField()
+    def __str__(self):
+        return self.name
+class PeriodGrouping(models.Model):
+    layout_year = models.ForeignKey('bps.PlanningLayoutYear', on_delete=models.CASCADE,
+                                    related_name='period_groupings')
+    months_per_bucket = models.PositiveSmallIntegerField(choices=[(1,'Monthly'),(3,'Quarterly'),(6,'Half-Year')])
+    label_prefix = models.CharField(max_length=5, default='')
+    class Meta:
+        unique_together = ('layout_year','months_per_bucket')
+    def buckets(self):
+        months = list(Period.objects.order_by('order'))
+        size = self.months_per_bucket
+        buckets = []
+        for i in range(0, 12, size):
+            group = months[i:i+size]
+            if size == 1:
+                code = group[0].code
+                name = group[0].name
+            else:
+                idx = (i // size) + 1
+                code = f"{self.label_prefix}{idx}"
+                name = code
+            buckets.append({'code': code, 'name': name, 'periods': group})
+        return buckets
 ```
 
 ### `models_resource.py`
@@ -569,7 +665,6 @@ class PivotedPlanningFact(models.Model):
 ```python
 from django.db import models, transaction
 from django.conf import settings
-from .models_layout import PlanningLayoutYear, PlanningLayout
 from .models_dimension import OrgUnit
 class PlanningStage(models.Model):
     code       = models.CharField(max_length=20, unique=True)
@@ -586,7 +681,7 @@ class PlanningStage(models.Model):
 class PlanningScenario(models.Model):
     code        = models.CharField(max_length=50, unique=True)
     name        = models.CharField(max_length=200)
-    layout_year = models.ForeignKey(PlanningLayoutYear, on_delete=models.CASCADE)
+    layout_year = models.ForeignKey('bps.PlanningLayoutYear', on_delete=models.CASCADE)
     org_units   = models.ManyToManyField(OrgUnit, through='ScenarioOrgUnit')
     stages      = models.ManyToManyField(PlanningStage, through='ScenarioStage')
     functions   = models.ManyToManyField('bps.PlanningFunction', through='ScenarioFunction')
@@ -609,7 +704,7 @@ class ScenarioStage(models.Model):
 class ScenarioStep(models.Model):
     scenario    = models.ForeignKey(PlanningScenario, on_delete=models.CASCADE)
     stage       = models.ForeignKey(PlanningStage, on_delete=models.CASCADE)
-    layout      = models.ForeignKey(PlanningLayout, on_delete=models.PROTECT)
+    layout      = models.ForeignKey('bps.PlanningLayout', on_delete=models.PROTECT)
     order       = models.PositiveSmallIntegerField()
     class Meta:
         unique_together = ('scenario','stage', 'layout')

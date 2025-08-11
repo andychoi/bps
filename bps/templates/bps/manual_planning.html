@@ -15,6 +15,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     <div>
       <button class="btn btn-primary me-2" id="btn-save">Save Changes</button>
       <a class="btn btn-outline-secondary" href="{% url 'admin:bps_planninglayout_change' layout_year.layout.pk %}">Edit Layout</a>
+      <button id="btn-xlsx">Export Excel</button>
     </div>
   </div>
 
@@ -55,6 +56,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
 {% block extra_js %}
 <link href="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3.1/dist/css/tabulator.min.css" rel="stylesheet"/>
 <script src="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3.1/dist/js/tabulator.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 <script>
 (function(){
   // ---- Context from server ----
@@ -63,35 +65,33 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
   const layoutId       = {{ layout_year.pk }};
   const buckets        = {{ buckets_js|safe }};
   const kfCodes        = {{ kf_codes|safe }};
+  const kfMeta         = {{ kf_meta_js|safe }};
   const headerDrivers  = {{ header_drivers_js|safe }};
   const rowDrivers     = {{ row_drivers_js|safe }};
   const headerDefaults = {{ header_defaults_js|safe }};
   const services       = {{ services_js|safe }};
   const orgUnits       = {{ org_units_js|safe }};
+  // Grouping config provided by server (may be [])
+  const rowGroupFields = {{ row_group_fields_js|safe }} || [];
+  const rowGroupStartOpen = {{ row_group_start_open_js|safe }};
 
   // ---- Helpers ----
   const toMap = (rows, vKey, lKey) =>
     rows.reduce((acc, r) => (acc[String(r[vKey])] = String(r[lKey]), acc), {});
-
   const orgUnitMap = toMap(orgUnits, "code", "name");
   const serviceMap = toMap(services, "code", "name");
-
   const driverMaps = {};
   rowDrivers.forEach(d => { driverMaps[d.key] = toMap(d.choices, "id", "name"); });
-
   const headerMaps = {};
   headerDrivers.forEach(d => { headerMaps[d.key] = toMap(d.choices, "id", "name"); });
 
-  // Q1/Q2.. or "01" -> first month code
   const bucketFirstPeriodMap = Object.fromEntries(
     buckets.map(b => [b.code, (b.periods && b.periods[0]) || b.code])
   );
-
   const rowKeys = rowDrivers.map(d => d.key);
   const hasOrgUnitCol = rowKeys.includes("orgunit");
   const hasServiceCol = rowKeys.includes("service");
 
-  // ---------- fix: safe lookup to avoid console warnings ----------
   function safeLookup(map) {
     return function(cell) {
       const v = cell.getValue();
@@ -100,7 +100,6 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       return Object.prototype.hasOwnProperty.call(map, k) ? map[k] : "";
     };
   }
-
   function listEditorParams(valuesMap) {
     return {
       values: valuesMap,
@@ -112,8 +111,6 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       verticalNavigation: "table",
     };
   }
-
-  // Read header selections
   function readHeaderSelections() {
     const selected = {};
     document.querySelectorAll(".header-select").forEach(sel => {
@@ -130,42 +127,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     });
   }
 
-  // Read-only “Context” cell text
-  function formatHeaderContext(hdrs) {
-    const parts = [];
-    for (const d of headerDrivers) {
-      const id = hdrs[d.key];
-      if (id == null || id === "") continue;
-      const display = (headerMaps[d.key] && headerMaps[d.key][String(id)]) || String(id);
-      parts.push(`${d.label}: ${display}`);
-    }
-    return parts.join(" • ");
-  }
-
-  // ---- Columns ----
-  const actionsCol = {
-    title: "",
-    field: "_actions",
-    width: 48,
-    headerSort: false,
-    hozAlign: "center",
-    frozen: true,
-    formatter: () => "🗑️",
-    cellClick: (_e, cell) => deleteRow(cell.getRow()),
-    tooltip: "Delete row (blank all values in this slice)",
-  };
-
-  const contextCol = {
-    title: "Context",
-    field: "_context",
-    width: 300,
-    frozen: true,
-    headerSort: false,
-    hozAlign: "left",
-    cssClass: "text-muted",
-    formatter: () => formatHeaderContext(readHeaderSelections()),
-  };
-
+  // ---- Columns (dimensions) ----
   const dimCols = [];
   if (hasOrgUnitCol) {
     dimCols.push({
@@ -175,7 +137,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       frozen: true,
       editor: "list",
       editorParams: listEditorParams(orgUnitMap),
-      formatter: safeLookup(orgUnitMap),                 // <— fixed
+      formatter: safeLookup(orgUnitMap),
       headerFilter: "list",
       headerFilterParams: { values: orgUnitMap, autocomplete: true, clearable: true },
       headerTooltip: "Search Org Units",
@@ -188,7 +150,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       width: 220,
       editor: "list",
       editorParams: listEditorParams(serviceMap),
-      formatter: safeLookup(serviceMap),                 // <— fixed
+      formatter: safeLookup(serviceMap),
       headerFilter: "list",
       headerFilterParams: { values: serviceMap, autocomplete: true, clearable: true },
       headerTooltip: "Search Services",
@@ -203,107 +165,132 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
         width: 180,
         editor: "list",
         editorParams: listEditorParams(driverMaps[d.key] || {}),
-        formatter: safeLookup(driverMaps[d.key] || {}),  // <— fixed
+        formatter: safeLookup(driverMaps[d.key] || {}),
         headerFilter: "list",
         headerFilterParams: { values: driverMaps[d.key] || {}, autocomplete: true, clearable: true },
         headerTooltip: `Search ${d.label}`,
       }))
   );
 
-  // Value columns (keep your existing editor/formatter if you added precision logic)
-  const valueCols = buckets.flatMap(b =>
-    kfCodes.map(kf => ({
-      title: `${b.name} ${kf}`,
+  // ---- Columns (values) — KEY FIGURE column groups ----
+  const valueColsGrouped = kfCodes.map(kf => ({
+    title: kf,
+    columns: buckets.map(b => ({
+      title: b.name,
       field: `${b.code}_${kf}`,
-      editor: overwriteNumberEditor, //editor: "number",
+      editor: overwriteNumberEditor,
       hozAlign: "right",
       bottomCalc: "sum",
       formatter: "money",
-      formatterParams: { symbol: "", precision: 2 }
-    }))
-  );
+      formatterParams: { symbol: "", precision: (kfMeta?.[kf]?.decimals ?? 2) },
+    })),
+  }));
 
-  // A small editor that selects everything on focus and ensures the first key overwrites
-  function overwriteNumberEditor(cell, onRendered, success, cancel, params) {
+  // Simple overwrite-on-first-key editor
+  function overwriteNumberEditor(cell, onRendered, success, cancel) {
     const input = document.createElement("input");
     input.type = "text";
     input.inputMode = "decimal";
     const curr = cell.getValue();
     input.value = (curr == null ? "" : curr);
-
     let firstKeyReplacePending = true;
-
-    function isPrintable(e) {
-      return e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
-    }
-
-    onRendered(() => {
-      // Robust focus + select (some browsers unselect after focus)
-      input.focus({ preventScroll: true });
-      input.select();
-      setTimeout(() => { try { input.select(); } catch(_){} }, 0);
-    });
-
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { success(input.value); return; }
-      if (e.key === "Escape") { cancel(); return; }
-      if (firstKeyReplacePending && isPrintable(e)) {
-        // Replace full content with first printable key
+    function isPrintable(e){ return e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey; }
+    onRendered(() => { input.focus({preventScroll:true}); input.select(); setTimeout(()=>{try{input.select()}catch(_){}}) });
+    input.addEventListener("keydown",(e)=>{
+      if (e.key === "Enter"){ success(input.value); return; }
+      if (e.key === "Escape"){ cancel(); return; }
+      if (firstKeyReplacePending && isPrintable(e)){
         input.value = e.key;
-        // Place caret at end
-        try { input.setSelectionRange(input.value.length, input.value.length); } catch(_) {}
+        try{ input.setSelectionRange(input.value.length, input.value.length);}catch(_){}
         firstKeyReplacePending = false;
         e.preventDefault();
         return;
       }
     });
-
-    input.addEventListener("focus", () => {
-      // If user clicked instead of tabbing, still select for consistency
-      input.select();
-    });
-
     input.addEventListener("blur", () => success(input.value));
-
     return input;
   }
 
+  // Build query params for server request
   function buildAjaxParams() {
     const params = { layout: layoutId };
     const hdr = readHeaderSelections();
-    Object.entries(hdr).forEach(([k, v]) => {
-      if (v != null && v !== "") params[`header_${k}`] = v;
-    });
+    Object.entries(hdr).forEach(([k,v]) => { if (v != null && v !== "") params[`header_${k}`] = v; });
     return params;
   }
 
-  const table = new Tabulator("#planning-grid", {
+  // Helpful group header label: translate codes to display text
+  function labelForGroup(field, raw) {
+    if (raw == null || raw === "") return "(blank)";
+    const key = String(raw);
+    if (field === "org_unit_code") return orgUnitMap[key] || key;
+    if (field === "service_code")  return serviceMap[key]  || key;
+    const dimKey = field.endsWith("_code") ? field.slice(0, -5) : field; // remove _code
+    const map = driverMaps[dimKey] || {};
+    return map[key] || key;
+  }
+
+  // ---- Tabulator init ----
+  const tableOptions = {
     layout: "fitColumns",
-    pagination: "local",
-    paginationSize: 50,
     ajaxURL: apiURL,
     ajaxConfig: { credentials: "include" },
     ajaxParams: buildAjaxParams(),
-    ajaxResponse: (_url, _params, res) => res,
-    columns: [actionsCol, contextCol, ...dimCols, ...valueCols],
+    ajaxResponse: (_url, _params, res) => res,  // API returns array of rows
+    columns: [
+      {
+        title: "",
+        field: "_actions",
+        width: 48,
+        headerSort: false,
+        hozAlign: "center",
+        frozen: true,
+        formatter: () => "🗑️",
+        cellClick: (_e, cell) => deleteRow(cell.getRow()),
+        tooltip: "Delete row (blank all values in this slice)",
+      },
+      ...dimCols,
+      ...valueColsGrouped,  // grouped value columns by Key Figure
+    ],
+    pagination: "local",
+    paginationSize: 50,
     history: true,
     validationMode: "highlight",
-  });
+  };
 
+  // Enable grouping only if configured
+  const rowGroupingOn = Array.isArray(rowGroupFields) && rowGroupFields.length > 0;
+  if (rowGroupingOn) {
+    tableOptions.groupBy = rowGroupFields.length === 1 ? rowGroupFields[0] : rowGroupFields;
+    tableOptions.groupStartOpen = !!rowGroupStartOpen;
+    tableOptions.groupToggleElement = "header";
+    tableOptions.groupClosedShowCalcs = true;
+    tableOptions.groupHeader = function(value, count, _data, group) {
+      const field = typeof group.getField === "function" ? group.getField() : "";
+      const label = labelForGroup(field, value);
+      return `${label} <span class="text-muted">(${count})</span>`;
+    };
+  }
+
+  const table = new Tabulator("#planning-grid", tableOptions);
+
+  // Header defaults + Apply
   setHeaderDefaults();
   const btnApply = document.getElementById("btn-apply-headers");
   if (btnApply) {
     btnApply.addEventListener("click", (e) => {
       e.preventDefault();
       table.setData(apiURL, buildAjaxParams());
-      table.updateColumnDefinition("_context", {}); // refresh the Context text
-      table.redraw();
     });
   }
 
-  // ---- Add Row
+  // ---- Export / Add Row ----
+  document.getElementById("btn-xlsx").addEventListener("click", () => {
+    table.download("xlsx", `${window.ply_code || "planning"}.xlsx`, {sheetName: "Plan"});
+  });
+
   const blankRow = (() => {
-    const base = { _context: "" };
+    const base = {};
     if (hasOrgUnitCol) base["org_unit_code"] = null;
     if (hasServiceCol) base["service_code"] = null;
     rowDrivers
@@ -316,16 +303,14 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
   document.getElementById("add-row-btn").addEventListener("click", async () => {
     try {
       const row = await table.addRow({ ...blankRow }, true);
-      // focus first editable dim col if present
-      const first = dimCols[0];
-      if (first) row.getCell(first.field).edit();
+      const firstDim = dimCols[0];
+      if (firstDim) row.getCell(firstDim.field).edit();
     } catch (e) { console.error(e); }
   });
 
-  // Build value-field universe once
+  // ---- Save edited numeric cells ----
   const VALUE_FIELDS = buckets.flatMap(b => kfCodes.map(kf => `${b.code}_${kf}`));
 
-  // ---- Save (unchanged logic; sends only edited numeric cells) ----
   document.getElementById("btn-save").addEventListener("click", () => {
     const editedCells = table.getEditedCells();
     const valueCells = editedCells.filter(c => VALUE_FIELDS.includes(c.getField()));
@@ -338,7 +323,6 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     for (const cell of valueCells) {
       const row = cell.getRow();
       const d = row.getData();
-
       const field = cell.getField();
       const sep = field.indexOf("_");
       const bucketCode = field.slice(0, sep);
@@ -346,7 +330,6 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       const period = bucketFirstPeriodMap[bucketCode] || bucketCode;
 
       const base = { layout: layoutId };
-
       const orgFromRow = hasOrgUnitCol ? d.org_unit_code : null;
       const orgFromHdr = headerSelected.orgunit || null;
       base.org_unit = orgFromRow || orgFromHdr || null;
@@ -354,7 +337,6 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
         missingOrgRows.add(row.getPosition(true));
         continue;
       }
-
       const svcFromRow = hasServiceCol ? d.service_code : null;
       const svcFromHdr = headerSelected.service || null;
       base.service = svcFromRow || svcFromHdr || null;
@@ -386,49 +368,38 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       body: JSON.stringify({
         layout: layoutId,
         headers: headerSelected,
-        delete_zeros: true,    // explicit (defaults true on server)
-        delete_blanks: true,   // explicit (defaults true on server)
+        delete_zeros: true,
+        delete_blanks: true,
         updates,
       }),
     })
-      .then(async (res) => {
-        const data = await res.json().catch(() => ({}));
-        if (res.status === 207 || (Array.isArray(data.errors) && data.errors.length)) {
-          const msg = [
-            "Some updates failed:",
-            ...(data.errors || []).slice(0, 10).map(e => `• ${e.error}`),
-            (data.errors || []).length > 10 ? `…and ${data.errors.length - 10} more` : ""
-          ].join("\n");
-          alert(msg);
-          table.replaceData();  // reload
-          return;
-        }
-        if (!res.ok) throw new Error(data.detail || "Save failed");
-        alert(`All changes saved. Updated ${data.updated ?? "some"} cells.`);
-        table.setData(apiURL, buildAjaxParams());
-      })
-      .catch((err) => { console.error(err); alert("Save failed."); });
+    .then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 207 || (Array.isArray(data.errors) && data.errors.length)) {
+        const msg = [
+          "Some updates failed:",
+          ...(data.errors || []).slice(0, 10).map(e => `• ${e.error}`),
+          (data.errors || []).length > 10 ? `…and ${data.errors.length - 10} more` : ""
+        ].join("\n");
+        alert(msg);
+        table.replaceData();  // reload
+        return;
+      }
+      if (!res.ok) throw new Error(data.detail || "Save failed");
+      alert(`All changes saved. Updated ${data.updated ?? "some"} cells.`);
+      table.setData(apiURL, buildAjaxParams());
+    })
+    .catch((err) => { console.error(err); alert("Save failed."); });
   });
 
-  // ---- NEW: Delete Row (blank every value in this slice so API deletes matching facts) ----
+  // ---- Delete entire row slice (all months/KFs) ----
   function deleteRow(row) {
     const d = row.getData();
     const headerSelected = readHeaderSelections();
+    const orgUnit = (hasOrgUnitCol ? d.org_unit_code : null) || headerSelected.orgunit || null;
+    if (!orgUnit) { alert("Org Unit is required (from header or row) to delete this slice."); return; }
+    const service = (hasServiceCol ? d.service_code : null) || headerSelected.service || null;
 
-    // Need org unit (from row or header) to resolve session
-    const orgFromRow = hasOrgUnitCol ? d.org_unit_code : null;
-    const orgFromHdr = headerSelected.orgunit || null;
-    const orgUnit = orgFromRow || orgFromHdr || null;
-    if (!orgUnit) {
-      alert("Org Unit is required (from header or row) to delete this slice.");
-      return;
-    }
-
-    const svcFromRow = hasServiceCol ? d.service_code : null;
-    const svcFromHdr = headerSelected.service || null;
-    const service = svcFromRow || svcFromHdr || null;
-
-    // Build a base payload with both row and header dims
     const base = { layout: layoutId, org_unit: orgUnit, service };
     rowDrivers
       .filter(dr => dr.key !== "orgunit" && dr.key !== "service")
@@ -437,18 +408,15 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       .filter(hd => hd.key !== "orgunit" && hd.key !== "service")
       .forEach(hd => { base[hd.key] = headerSelected[hd.key] ?? null; });
 
-    // Generate one blank update per value field
     const updates = [];
     for (const field of VALUE_FIELDS) {
       const sep = field.indexOf("_");
       const bucketCode = field.slice(0, sep);
       const kf = field.slice(sep + 1);
       const period = bucketFirstPeriodMap[bucketCode] || bucketCode;
-      updates.push({ ...base, period, key_figure: kf, value: "" }); // blank -> delete on server
+      updates.push({ ...base, period, key_figure: kf, value: "" });
     }
-
     if (!updates.length) return;
-
     if (!confirm("Delete this entire row (all months/key figures) from this header slice?")) return;
 
     fetch(updateURL, {
@@ -463,19 +431,15 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
         updates,
       }),
     })
-      .then(async (res) => {
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          const msg = (data && (data.detail || (data.errors && JSON.stringify(data.errors)))) || res.statusText;
-          throw new Error(msg);
-        }
-        // Optimistic UI: remove row locally; fallback to reload
-        try { table.deleteRow(row); } catch (_) { table.replaceData(); }
-      })
-      .catch(err => {
-        console.error(err);
-        alert("Failed to delete row.");
-      });
+    .then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = (data && (data.detail || (data.errors && JSON.stringify(data.errors)))) || res.statusText;
+        throw new Error(msg);
+      }
+      try { table.deleteRow(row); } catch (_) { table.replaceData(); }
+    })
+    .catch(err => { console.error(err); alert("Failed to delete row."); });
   }
 
   function getCookie(name) {

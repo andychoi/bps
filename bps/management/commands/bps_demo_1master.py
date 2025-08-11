@@ -1,10 +1,8 @@
 import random
 from decimal import Decimal
-
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.db import transaction
-
 from bps.models.models import UnitOfMeasure, ConversionRate, KeyFigure, Constant, Period
 from bps.models.models_dimension import (
     Year,
@@ -16,7 +14,6 @@ from bps.models.models_dimension import (
     OrgUnit,
 )
 from bps.models.models_resource import Position, RateCard, Skill
-
 
 User = get_user_model()
 random.seed(42)
@@ -30,7 +27,6 @@ COUNTRIES = {
     "MSP": ["USA", "India", "Mexico"],
 }
 
-
 class Command(BaseCommand):
     help = "Step 1: Load all master/reference data for cost-planning"
 
@@ -41,7 +37,6 @@ class Command(BaseCommand):
             self.stderr.write("❌ No superuser found; aborting.")
             return
 
-        # Units of Measure
         hrs, _ = UnitOfMeasure.objects.get_or_create(
             code="HRS", defaults={"name": "Hours", "is_base": True}
         )
@@ -58,20 +53,14 @@ class Command(BaseCommand):
             code="EA", defaults={"name": "Each", "is_base": False}
         )
 
-        # Conversions (HRS → MAN_MONTH; MAN_MONTH → HC)
         ConversionRate.objects.get_or_create(
-            from_uom=hrs,
-            to_uom=manm,
-            defaults={"factor": Decimal("1") / Decimal("168")},
+            from_uom=hrs, to_uom=manm, defaults={"factor": Decimal("1") / Decimal("168")}
         )
         ConversionRate.objects.get_or_create(
-            from_uom=manm,
-            to_uom=hc,
-            defaults={"factor": Decimal("1") / Decimal("12")},
+            from_uom=manm, to_uom=hc, defaults={"factor": Decimal("1") / Decimal("12")}
         )
         self.stdout.write(self.style.SUCCESS("✔️ UOMs & ConversionRates"))
 
-        # Key Figures (include UTIL so RES_ALLOC works)
         kf_defs = [
             ("FTE", "Full Time Equivalent", False, hc),
             ("MAN_MONTH", "Man-Months", False, manm),
@@ -90,51 +79,31 @@ class Command(BaseCommand):
             )
         self.stdout.write(self.style.SUCCESS("✔️ KeyFigures"))
 
-        # Constants
-        Constant.objects.get_or_create(
-            name="INFLATION_RATE", defaults={"value": Decimal("0.03")}
-        )
-        Constant.objects.get_or_create(
-            name="GROWTH_FACTOR", defaults={"value": Decimal("0.05")}
-        )
+        Constant.objects.get_or_create(name="INFLATION_RATE", defaults={"value": Decimal("0.03")})
+        Constant.objects.get_or_create(name="GROWTH_FACTOR", defaults={"value": Decimal("0.05")})
         self.stdout.write(self.style.SUCCESS("✔️ Constants"))
 
-        # Years
         years = []
         for idx, y in enumerate([2025, 2026], start=1):
-            obj, _ = Year.objects.get_or_create(
-                code=str(y), defaults={"name": f"FY {y}", "order": idx}
-            )
+            obj, _ = Year.objects.get_or_create(code=str(y), defaults={"name": f"FY {y}", "order": idx})
             years.append(obj)
 
-        # Versions
+        UserModel = get_user_model()
         actual_ver, _ = Version.objects.get_or_create(
-            code="ACTUAL",
-            defaults={"name": "Actuals", "order": 0, "created_by": admin},
+            code="ACTUAL", defaults={"name": "Actuals", "order": 0, "created_by": admin},
         )
         for idx, (code, name) in enumerate(
-            [("DRAFT", "Draft"), ("PLAN V1", "Realistic"), ("PLAN V2", "Optimistic")],
-            start=1,
+            [("DRAFT", "Draft"), ("PLAN V1", "Realistic"), ("PLAN V2", "Optimistic")], start=1,
         ):
-            Version.objects.get_or_create(
-                code=code, defaults={"name": name, "order": idx, "created_by": admin}
-            )
+            Version.objects.get_or_create(code=code, defaults={"name": name, "order": idx, "created_by": admin})
 
-        # Periods
-        for idx, mon in enumerate(
-            ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
-            start=1,
-        ):
-            Period.objects.get_or_create(
-                code=f"{idx:02}", defaults={"name": mon, "order": idx}
-            )
+        for idx, mon in enumerate(["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], start=1):
+            Period.objects.get_or_create(code=f"{idx:02}", defaults={"name": mon, "order": idx})
         self.stdout.write(self.style.SUCCESS("✔️ Years, Versions & Periods"))
 
-        # OrgUnit tree (Root + Corporate Admin + 3x3 divisions/depts)
         root = OrgUnit.get_root_nodes().first()
         if not root:
             root = OrgUnit.add_root(code="ROOT", name="Head Office", head_user=admin)
-
         if not OrgUnit.objects.filter(code="CORP_ADMIN").exists():
             root.add_child(code="CORP_ADMIN", name="Corporate Admin", head_user=admin)
 
@@ -149,39 +118,27 @@ class Command(BaseCommand):
                     div_node.add_child(code=dept_code, name=f"Dept {div}.{dept}", head_user=admin)
         self.stdout.write(self.style.SUCCESS("✔️ OrgUnit tree"))
 
-        # CBUs, CostCenters, InternalOrders
         for tier in range(1, 3 + 1):
             CBU.objects.get_or_create(
                 code=f"CBU{tier}",
                 defaults={"name": f"CBU Tier {tier}", "group": "Demo", "tier": str(tier), "is_active": True},
             )
 
-        # one CostCenter per OrgUnit (except ROOT) and 3–4 InternalOrders under each CC
         for ou in OrgUnit.objects.exclude(code="ROOT"):
             cc, _ = CostCenter.objects.get_or_create(code=ou.code, defaults={"name": ou.name})
-
-            # Create 3–4 IOs with codes like IO1234 and link them to this CC via cc_code
             target_ios = random.randint(2, 4)
-
             created = 0
             attempts = 0
-            # Avoid rare code collisions (IOxxxx is global-unique), cap attempts for safety
             while created < target_ios and attempts < 50:
                 attempts += 1
                 io_code = f"IO{random.randint(1000, 9999)}"
                 io, was_created = InternalOrder.objects.get_or_create(
-                    code=io_code,
-                    defaults={
-                        "name": f"{ou.name} {io_code}",
-                        "cc_code": cc.code,   # link to the cost center
-                    },
+                    code=io_code, defaults={"name": f"{ou.name} {io_code}", "cc_code": cc.code},
                 )
                 if was_created:
                     created += 1
-
         self.stdout.write(self.style.SUCCESS("✔️ CBUs, CostCenters & InternalOrders"))
 
-        # Services (5 per active CBU, attached to ROOT for simplicity)
         for cbu in CBU.objects.filter(is_active=True):
             for svc in TEMPLATE_SERVICES:
                 Service.objects.get_or_create(
@@ -196,7 +153,6 @@ class Command(BaseCommand):
                 )
         self.stdout.write(self.style.SUCCESS("✔️ Services"))
 
-        # Positions & RateCards
         for year in years:
             for skill in SKILLS:
                 sk_obj, _ = Skill.objects.get_or_create(name=skill)
@@ -204,14 +160,9 @@ class Command(BaseCommand):
                     Position.objects.get_or_create(
                         year=year,
                         code=f"{skill[:3].upper()}-{lvl}",
-                        defaults={
-                            "name": f"{skill} {lvl}",
-                            "skill": sk_obj,
-                            "level": lvl,
-                            "fte": 1.0,
-                            "is_open": False,
-                        },
+                        defaults={"name": f"{skill} {lvl}", "skill": sk_obj, "level": lvl, "fte": 1.0, "is_open": False},
                     )
+
             for rtype in ["EMP", "CON", "MSP"]:
                 for skill in SKILLS:
                     sk_obj = Skill.objects.get(name=skill)
@@ -224,9 +175,7 @@ class Command(BaseCommand):
                                 resource_type=rtype,
                                 country=country,
                                 defaults={
-                                    "efficiency_factor": Decimal(random.uniform(0.7, 1.0)).quantize(
-                                        Decimal("0.01")
-                                    ),
+                                    "efficiency_factor": Decimal(random.uniform(0.7, 1.0)).quantize(Decimal("0.01")),
                                     "hourly_rate": Decimal(random.uniform(20, 120)).quantize(Decimal("0.01")),
                                 },
                             )

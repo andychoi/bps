@@ -1,7 +1,6 @@
 {# templates/bps/session_detail.html #}
 {% extends "bps/base.html" %}
 {% load crispy_forms_tags %}
-
 {% block content %}
   {# -- Breadcrumbs -- #}
   {% if breadcrumbs %}
@@ -40,34 +39,43 @@
     </form>
   {% endif %}
 
-  {# -- Raw Facts -- #}
-  <h2>Raw Facts</h2>
-  <table class="table table-striped">
-    <thead>
-      <tr>
-        <th>Period</th>
-        <th>Key Figure</th>
-        <th>Value</th>
-        <th>UoM</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% if facts %}
-        {% for f in facts %}
-          <tr>
-            <td>{{ f.period.code }}</td>
-            <td>{{ f.key_figure.code }}</td>
-            <td>{{ f.value }}</td>
-            <td>{{ f.uom.code }}</td>
-          </tr>
-        {% endfor %}
-      {% else %}
+  {# -- Raw Facts (paginated) -- #}
+  <h2 class="mt-4">Raw Facts</h2>
+
+  <div class="table-responsive">
+    <table class="table table-striped">
+      <thead>
         <tr>
-          <td colspan="4" class="text-center text-muted">No facts recorded yet.</td>
+          <th>Period</th>
+          <th>Key Figure</th>
+          <th>Value</th>
+          <th>UoM</th>
+          <th>Service</th>
         </tr>
-      {% endif %}
-    </tbody>
-  </table>
+      </thead>
+      <tbody>
+        {% if facts %}
+          {% for f in facts %}
+            <tr>
+              <td>{{ f.period.code }}</td>
+              <td>{{ f.key_figure.code }}</td>
+              <td>{{ f.value }}</td>
+              <td>{{ f.uom.code|default:"–" }}</td>
+              <td>{{ f.service.name|default:"–" }}</td>
+            </tr>
+          {% endfor %}
+        {% else %}
+          <tr>
+            <td colspan="5" class="text-center text-muted">No facts recorded yet.</td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if is_paginated %}
+    {% include "bps/_paginator.html" with page_obj=facts_page paginator=paginator page_size=page_size page_sizes=page_sizes %}
+  {% endif %}
 
   {# -- Advance to Next Step (staff only) -- #}
   <form method="post" action="{% url 'bps:advance_step' sess.pk %}">

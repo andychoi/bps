@@ -1,0 +1,50 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<h1>Planner Dashboard</h1>
+
+{% if effective_delegator %}
+  <div class="alert">Acting as <b>{{ effective_delegator.get_username }}</b>.
+    <a href="{% url 'planner-act-as-stop' %}">Stop</a>
+  </div>
+{% endif %}
+
+{% if is_enterprise %}
+  <p><b>Enterprise Planner</b>: you can access <i>all</i> Org Units and make changes.</p>
+{% else %}
+  <h3>Delegations</h3>
+  {% if delegations %}
+    <ul>
+      {% for d in delegations %}
+        <li>From <b>{{ d.delegator.get_username }}</b>
+          <a href="{% url 'planner-act-as' d.delegator.id %}">Act as</a>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>No active delegations.</p>
+  {% endif %}
+{% endif %}
+
+<h3>Allowed Org Units</h3>
+<div id="ou-list"></div>
+
+<script>
+fetch("{% url 'api-allowed-ous' %}")
+  .then(r => r.json())
+  .then(({results}) => {
+    const el = document.getElementById("ou-list");
+    if (!results.length){ el.innerHTML = "<i>None</i>"; return; }
+    const ul = document.createElement("ul");
+    results.forEach(r => {
+      const li = document.createElement("li");
+      li.textContent = `${r.code || ''} ${r.name}`;
+      ul.appendChild(li);
+    });
+    el.appendChild(ul);
+  });
+</script>
+{% endblock %}
+
+<style>
+.alert{padding:.5rem .6rem;background:#fff3cd;border:1px solid #ffeeba;border-radius:4px;margin:.5rem 0;}
+</style>

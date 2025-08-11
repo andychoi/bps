@@ -3,25 +3,58 @@
 from django.contrib import admin
 from django import forms
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import ValidationError
+from django.db.models import Count
+from .models.admin_proxy import PlanningAdminDashboard
+from django.template.response import TemplateResponse
 
 from .models.models import (
-    UnitOfMeasure, ConversionRate,
-    Constant, SubFormula, Formula, FormulaRun, FormulaRunEntry,
-    PlanningFunction, ReferenceData,
-    KeyFigure, DataRequest, DataRequestLog, PlanningFact,
-    PlanningSession, PlanningStage,
-    PlanningLayout, PlanningLayoutYear, PlanningDimension, PlanningKeyFigure,
-    Period, PeriodGrouping, RateCard, Position, PlanningLayoutDimension
+    UnitOfMeasure, ConversionRate, Constant, SubFormula, Formula, FormulaRun, FormulaRunEntry,
+    PlanningFunction, ReferenceData, KeyFigure, DataRequest, DataRequestLog, PlanningFact,
+    PlanningSession, PlanningStage, Period, PeriodGrouping, RateCard, Position, Resource, Skill
 )
+
+from .models.models_layout import (
+    PlanningLayout, PlanningLayoutYear, PlanningLayoutDimension, LayoutDimensionOverride, PlanningKeyFigure
+)
+
 from .models.models_dimension import (
     Year, Version, OrgUnit, Account, Service, CBU, CostCenter, InternalOrder
 )
+
 from .models.models_resource import Skill, Resource
 from .models.models_workflow import (
     PlanningScenario, ScenarioStep, ScenarioStage, ScenarioFunction, ScenarioOrgUnit
 )
 
+from .admin_access import OrgUnitAccessAdmin, DelegationAdmin
 
+@admin.register(PlanningAdminDashboard)
+class PlanningAdminDashboardAdmin(admin.ModelAdmin):
+    change_list_template = "admin/bps/planning_dashboard.html"
+
+    def changelist_view(self, request, extra_context=None):
+        stats = {
+            "layouts": PlanningLayout.objects.count(),
+            "layout_years": PlanningLayoutYear.objects.count(),
+            "key_figs": PlanningKeyFigure.objects.count(),
+            "scenarios": PlanningScenario.objects.count(),
+            "years": Year.objects.count(),
+            "versions": Version.objects.count(),
+            "org_units": OrgUnit.objects.count(),
+        }
+        layouts = (
+            PlanningLayout.objects
+            .annotate(n_dims=Count("dimensions"), n_kf=Count("planningkeyfigure"))
+            .order_by("code")
+        )
+        ctx = {
+            "title": "Planning Admin Dashboard",
+            "stats": stats,
+            "layouts": layouts,
+        }
+        return TemplateResponse(request, self.change_list_template, ctx)
+    
 # ── Units of Measure & Conversion Rates ────────────────────────────────────
 
 @admin.register(UnitOfMeasure)
@@ -169,14 +202,16 @@ class KeyFigureAdmin(admin.ModelAdmin):
 
 # ── Planning Layout & Dimensions ───────────────────────────────────────────
 
-class PlanningDimensionInline(admin.TabularInline):
-    model = PlanningDimension
-    extra = 1
+# class PlanningDimensionInline(admin.TabularInline):
+#     model = PlanningDimension
+#     extra = 1
 
 
 class PlanningKeyFigureInline(admin.TabularInline):
     model = PlanningKeyFigure
     extra = 1
+    fields = ("key_figure", "is_editable", "is_computed", "formula", "display_order")
+    ordering = ("display_order",)
 
 
 class LayoutYearInline(admin.TabularInline):
@@ -184,18 +219,41 @@ class LayoutYearInline(admin.TabularInline):
     extra  = 1
     fields = ('year', 'version')
 
+# Template-level dimensions live under the Layout now
+class PlanningLayoutDimensionInlineForm(forms.ModelForm):
+    class Meta:
+        model = PlanningLayoutDimension
+        fields = ("content_type", "is_row", "is_column", "is_header", "order")
+    def clean(self):
+        cleaned = super().clean()
+        flags = [cleaned.get("is_row"), cleaned.get("is_column"), cleaned.get("is_header")]
+        if sum(bool(x) for x in flags) != 1:
+            raise ValidationError("Exactly one of Row / Column / Header must be checked.")
+        return cleaned
+
+class PlanningLayoutDimensionInline(admin.TabularInline):
+    model = PlanningLayoutDimension
+    form  = PlanningLayoutDimensionInlineForm
+    extra = 0
+    fields = ("content_type", "is_row", "is_column", "is_header", "order")
+    ordering = ("order",)
+
+# Per-year overrides inline under LayoutYear
+class LayoutDimensionOverrideInline(admin.TabularInline):
+    model = LayoutDimensionOverride
+    extra = 0
+    fields = ("dimension", "allowed_values", "filter_criteria")
+
 
 @admin.register(PlanningLayout)
 class PlanningLayoutAdmin(admin.ModelAdmin):
     list_display = ('code', 'name', 'domain', 'default')
     search_fields = ("code", "name")
-    inlines      = [PlanningDimensionInline, PlanningKeyFigureInline, LayoutYearInline]
+    inlines = [PlanningLayoutDimensionInline, PlanningKeyFigureInline, LayoutYearInline]
+    
+# Show template-level dimensions inline on the layout page too
+PlanningLayoutAdmin.inlines.insert(0, PlanningLayoutDimensionInline)
 
-class PlanningLayoutDimensionInline(admin.TabularInline):
-    model = PlanningLayoutDimension
-    extra = 0
-    fields = ("content_type", "is_row", "is_column", "is_header", "order", "allowed_values", "filter_criteria")
-    ordering = ("order",)
 
 class PeriodGroupingInline(admin.TabularInline):
     model = PeriodGrouping
@@ -203,76 +261,95 @@ class PeriodGroupingInline(admin.TabularInline):
     fields = ("months_per_bucket", "label_prefix")
 
 class PlanningLayoutYearAdminForm(forms.ModelForm):
-    """
-    Dynamically render a field per header dimension so admins can pick the slice.
-    Saves selected PKs back into header_dims JSON as { 'ModelName': <pk or None>, ... }.
-    """
     class Meta:
         model = PlanningLayoutYear
         fields = "__all__"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        instance = getattr(self, "instance", None)
+        if not (instance and instance.pk):
+            return
+        header_cfg = instance.header_dims or {}
 
-        instance = self.instance if self.instance and self.instance.pk else None
-        header_cfg = (instance.header_dims or {}) if instance else {}
+        # Build header pickers using template dimensions + per-year overrides
+        overrides = {
+            o.dimension_id: o for o in instance.dimension_overrides.select_related("dimension__content_type")
+        }
+        for dim in instance.layout.dimensions.filter(is_header=True).select_related("content_type").order_by("order"):
+            Model = dim.content_type.model_class()
+            fname = f"hdr_{dim.content_type.model}"
 
-        # For each PLD flagged as header, render a ModelChoiceField for its model
-        if instance:
-            for pld in instance.layout_dimensions.select_related("content_type").filter(is_header=True).order_by("order"):
-                Model = pld.content_type.model_class()
-                field_name = f"hdr_{pld.content_type.model}"  # e.g. hdr_orgunit, hdr_service, hdr_position …
+            qs = Model.objects.all()
+            ov = overrides.get(dim.id)
+            if ov and ov.allowed_values:
+                pks = [v for v in ov.allowed_values if isinstance(v, int)]
+                codes = [v for v in ov.allowed_values if isinstance(v, str)]
+                if pks:
+                    qs = qs.filter(pk__in=pks)
+                if codes and hasattr(Model, "code"):
+                    qs = qs.filter(code__in=codes)
 
-                qs = Model.objects.all()
-                # If allowed_values is provided, restrict
-                if pld.allowed_values:
-                    # allow IDs in allowed_values (ints) or codes (strings) if the model has a 'code' field
-                    if hasattr(Model, "code"):
-                        qs = qs.filter(code__in=[v for v in pld.allowed_values if isinstance(v, str)])
-                    else:
-                        qs = qs.filter(pk__in=[v for v in pld.allowed_values if isinstance(v, int)])
+            self.fields[fname] = forms.ModelChoiceField(
+                queryset=qs,
+                required=False,
+                label=f"Header: {Model._meta.verbose_name.title()}",
+            )
 
-                initial_pk = header_cfg.get(pld.content_type.model)
-                self.fields[field_name] = forms.ModelChoiceField(
-                    queryset=qs,
-                    required=False,
-                    label=f"Header: {Model._meta.verbose_name.title()}"
-                )
-                if initial_pk:
-                    try:
-                        self.fields[field_name].initial = qs.get(pk=initial_pk).pk
-                    except Model.DoesNotExist:
-                        pass  # ignore stale selection
-
-    def clean(self):
-        cleaned = super().clean()
-        # Ensure period_grouping stays present in header_dims if already used
-        return cleaned
+            raw = header_cfg.get(dim.content_type.model)
+            if raw:
+                try:
+                    if isinstance(raw, int):
+                        self.fields[fname].initial = raw
+                    elif hasattr(Model, "code"):
+                        inst = qs.filter(code=raw).first()
+                        if inst:
+                            self.fields[fname].initial = inst.pk
+                except Exception:
+                    pass
 
     def save(self, commit=True):
         inst = super().save(commit=False)
-        header = inst.header_dims or {}
-        # Carry forward non-dimension header settings (e.g., period_grouping_id)
-        # Then overwrite/add dimension selections
-        if inst.pk:
-            for pld in inst.layout_dimensions.select_related("content_type").filter(is_header=True):
-                field_name = f"hdr_{pld.content_type.model}"
-                sel = self.cleaned_data.get(field_name)
-                header[pld.content_type.model] = sel.pk if sel else None
+        header = dict(inst.header_dims or {})
+        for dim in inst.layout.dimensions.filter(is_header=True).select_related("content_type"):
+            fname = f"hdr_{dim.content_type.model}"
+            sel = self.cleaned_data.get(fname)
+            header[dim.content_type.model] = sel.pk if sel else None
         inst.header_dims = header
         if commit:
             inst.save()
             self.save_m2m()
         return inst
-    
+
 @admin.register(PlanningLayoutYear)
 class PlanningLayoutYearAdmin(admin.ModelAdmin):
     form = PlanningLayoutYearAdminForm
-    list_display      = ('layout', 'year', 'version')
-    filter_horizontal = ('org_units', 'row_dims')
-    search_fields     = ('layout__code',)
-    list_filter       = ('layout', 'year', 'version')
-    inlines = [PlanningLayoutDimensionInline, PeriodGroupingInline]
+    list_display      = ("layout", "year", "version", "header_summary")
+    list_filter       = ("layout", "year", "version")
+    search_fields     = ("layout__code", "layout__name")
+    filter_horizontal = ("org_units",)  # row_dims removed
+    inlines           = [LayoutDimensionOverrideInline, PeriodGroupingInline]
+
+    def header_summary(self, obj):
+        if not obj.header_dims:
+            return "—"
+        parts = []
+        from django.contrib.contenttypes.models import ContentType
+        for k, v in obj.header_dims.items():
+            try:
+                ct = ContentType.objects.get(model=k)
+                Model = ct.model_class()
+                if not v:
+                    continue
+                inst = Model.objects.filter(pk=v).first() if isinstance(v, int) else (
+                    Model.objects.filter(code=v).first() if hasattr(Model, "code") else None
+                )
+                if inst:
+                    parts.append(f"{Model._meta.verbose_name.title()}: {inst}")
+            except Exception:
+                continue
+        return " • ".join(parts) or "—"
+    header_summary.short_description = "Header Defaults"
 
 
 # ── Period & Grouping ──────────────────────────────────────────────────────

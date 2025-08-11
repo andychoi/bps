@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from decimal import Decimal
 from bps.models.models import PlanningLayoutYear, PlanningFact, PlanningLayoutDimension, Version
+from bps.models.models_layout import LayoutDimensionOverride
 from .serializers import PlanningFactSerializer, PlanningFactPivotRowSerializer
 from .utils import pivot_facts_grouped
 
@@ -161,7 +162,11 @@ class PlanningGridBulkUpdateAPIView(APIView):
         # 3) Apply each update with validation
         successful, errors = 0, []
         # pre‐load your dimension rules for this layout_year:
-        dims = { d.content_type.model: d for d in ly.layout_dimensions.all() }
+        dims = { d.content_type.model: d for d in ly.layout.dimensions.all() }
+        overrides = {
+            ov.dimension_id: ov
+            for ov in LayoutDimensionOverride.objects.filter(layout_year=ly).select_related("dimension")
+        }
 
         for upd in updates:
             fact_id = upd.get("id")
@@ -183,13 +188,25 @@ class PlanningGridBulkUpdateAPIView(APIView):
             # --- dimension validation ---
             # for each row‐dimension on this layout, ensure fact.org_unit etc fits the filter
             for ld in dims.values():
-                model_name = ld.content_type.model  # e.g. "orgunit"
                 if not ld.is_row:
                     continue
+                model_name = ld.content_type.model  # e.g. "orgunit"
                 # pick the corresponding foreign‐key attribute on fact:
                 inst = getattr(fact, model_name, None)
                 if not inst:
                     continue
+                ov = overrides.get(ld.id)
+                if ov:
+                    # allowed_values can contain PKs or codes
+                    allowed = set(ov.allowed_values or [])
+                    if allowed:
+                        if inst.pk not in allowed and (not hasattr(inst, "code") or inst.code not in allowed):
+                            raise ValueError(f"{model_name} {inst} not in allowed_values")
+                    if ov.filter_criteria:
+                        Model = ld.content_type.model_class()
+                        if not Model.objects.filter(pk=inst.pk, **ov.filter_criteria).exists():
+                            raise ValueError(f"{model_name} {inst} fails filter {ov.filter_criteria}")
+                                        
                 # 1) if allowed_values set, enforce:
                 if ld.allowed_values and inst.pk not in ld.allowed_values:
                     raise ValueError(f"{model_name} {inst} not in allowed_values")

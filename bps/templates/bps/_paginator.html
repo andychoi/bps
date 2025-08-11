@@ -1,0 +1,96 @@
+{% if is_paginated %}
+<div class="d-flex align-items-center flex-wrap gap-2 my-2">
+
+  <!-- Left: pagination controls -->
+  <nav aria-label="Pagination">
+    <ul class="pagination pagination-sm mb-0">
+
+      {# First / Prev #}
+      <li class="page-item {% if not page_obj.has_previous %}disabled{% endif %}">
+        <a class="page-link"
+           href="?page=1{% if sanitized_query %}&{{ sanitized_query }}{% endif %}">First</a>
+      </li>
+      <li class="page-item {% if not page_obj.has_previous %}disabled{% endif %}">
+        {% if page_obj.has_previous %}
+          <a class="page-link"
+             href="?page={{ page_obj.previous_page_number }}{% if sanitized_query %}&{{ sanitized_query }}{% endif %}">Prev</a>
+        {% else %}
+          <span class="page-link">Prev</span>
+        {% endif %}
+      </li>
+
+      {# Numbered window: current-3 .. current+3, with edge links + ellipses #}
+      {% with start=page_obj.number|add:"-3" end=page_obj.number|add:"3" %}
+        {# clamp bounds in logic below #}
+
+        {# Show page 1 and leading ellipsis if window starts after 2 #}
+        {% if start|add:"-1" > 1 %}
+          <li class="page-item">
+            <a class="page-link"
+               href="?page=1{% if sanitized_query %}&{{ sanitized_query }}{% endif %}">1</a>
+          </li>
+          {% if start > 2 %}
+            <li class="page-item disabled"><span class="page-link">…</span></li>
+          {% endif %}
+        {% endif %}
+
+        {# Main window #}
+        {% for num in page_obj.paginator.page_range %}
+          {% if num >= start and num <= end and num >= 1 and num <= page_obj.paginator.num_pages %}
+            <li class="page-item {% if page_obj.number == num %}active{% endif %}">
+              {% if page_obj.number == num %}
+                <span class="page-link">{{ num }}</span>
+              {% else %}
+                <a class="page-link"
+                   href="?page={{ num }}{% if sanitized_query %}&{{ sanitized_query }}{% endif %}">{{ num }}</a>
+              {% endif %}
+            </li>
+          {% endif %}
+        {% endfor %}
+
+        {# Trailing ellipsis and last page if window ends before last-1 #}
+        {% if end|add:"1" < page_obj.paginator.num_pages %}
+          {% if end < page_obj.paginator.num_pages|add:"-1" %}
+            <li class="page-item disabled"><span class="page-link">…</span></li>
+          {% endif %}
+          <li class="page-item">
+            <a class="page-link"
+               href="?page={{ page_obj.paginator.num_pages }}{% if sanitized_query %}&{{ sanitized_query }}{% endif %}">{{ page_obj.paginator.num_pages }}</a>
+          </li>
+        {% endif %}
+      {% endwith %}
+
+      {# Next / Last #}
+      <li class="page-item {% if not page_obj.has_next %}disabled{% endif %}">
+        {% if page_obj.has_next %}
+          <a class="page-link"
+             href="?page={{ page_obj.next_page_number }}{% if sanitized_query %}&{{ sanitized_query }}{% endif %}">Next</a>
+        {% else %}
+          <span class="page-link">Next</span>
+        {% endif %}
+      </li>
+      <li class="page-item {% if not page_obj.has_next %}disabled{% endif %}">
+        <a class="page-link"
+           href="?page={{ page_obj.paginator.num_pages }}{% if sanitized_query %}&{{ sanitized_query }}{% endif %}">Last</a>
+      </li>
+    </ul>
+  </nav>
+
+  <!-- Right: per-page selector -->
+  <form method="get" class="ms-auto d-flex align-items-center gap-2">
+    {# Preserve existing query params except page/page_size #}
+    {% for key, value in request.GET.items %}
+      {% if key != 'page' and key != 'page_size' %}
+        <input type="hidden" name="{{ key }}" value="{{ value }}">
+      {% endif %}
+    {% endfor %}
+    <input type="hidden" name="page" value="1">
+    <label for="pg-size" class="form-label mb-0 small text-nowrap">Rows per page</label>
+    <select id="pg-size" name="page_size" class="form-select form-select-sm" onchange="this.form.submit()">
+      {% for size in page_sizes %}
+        <option value="{{ size }}" {% if page_size == size %}selected{% endif %}>{{ size }}</option>
+      {% endfor %}
+    </select>
+  </form>
+</div>
+{% endif %}

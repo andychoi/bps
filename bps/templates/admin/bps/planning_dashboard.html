@@ -1,0 +1,66 @@
+{% extends "admin/change_list.html" %}
+{% load static %}
+
+{% block content_title %}<h1>{{ title }}</h1>{% endblock %}
+
+{% block result_list %}
+<div class="dashboard">
+
+  <div class="cards">
+    <div class="card">
+      <h3>1) Create/Review Layouts</h3>
+      <p>Define template, dimensions, and key figures.</p>
+      <a class="button" href="{% url 'admin:bps_planninglayout_changelist' %}">Open Layouts</a>
+    </div>
+
+    <div class="card">
+      <h3>2) Instantiate Year/Version</h3>
+      <p>Create PlanningLayoutYear and set header defaults & period groupings.</p>
+      <a class="button" href="{% url 'admin:bps_planninglayoutyear_changelist' %}">Open Layout Years</a>
+    </div>
+
+    <div class="card">
+      <h3>3) Scenarios & Org Units</h3>
+      <p>Create scenarios, attach org units, and steps.</p>
+      <a class="button" href="{% url 'admin:bps_planningscenario_changelist' %}">Open Scenarios</a>
+    </div>
+
+    <div class="card">
+      <h3>4) Quick Actions</h3>
+      <p><a href="{% url 'admin:bps_period_changelist' %}">Periods</a> •
+         <a href="{% url 'admin:bps_year_changelist' %}">Years</a> •
+         <a href="{% url 'admin:bps_version_changelist' %}">Versions</a> •
+         <a href="{% url 'admin:bps_orgunit_changelist' %}">Org Units</a></p>
+    </div>
+  </div>
+
+  <h2>Current Layouts</h2>
+  <table class="listing">
+    <thead><tr><th>Code</th><th>Name</th><th>#Dims</th><th>#KFs</th><th>Actions</th></tr></thead>
+    <tbody>
+      {% for l in layouts %}
+      <tr>
+        <td>{{ l.code }}</td>
+        <td>{{ l.name }}</td>
+        <td>{{ l.n_dims }}</td>
+        <td>{{ l.n_kf }}</td>
+        <td>
+          <a href="{% url 'admin:bps_planninglayout_change' l.pk %}">Edit</a> •
+          <a href="{% url 'admin:bps_planninglayoutyear_changelist' %}?layout__id__exact={{ l.pk }}">Year/Version</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+</div>
+
+<style>
+.dashboard .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin:12px 0}
+.dashboard .card{border:1px solid #e5e5e5;border-radius:6px;padding:12px;background:#fff}
+.dashboard .card h3{margin:.2rem 0 .4rem}
+.dashboard .card .button{display:inline-block;padding:.35rem .6rem;border:1px solid #ccc;border-radius:4px}
+.listing{width:100%;border-collapse:collapse;margin-top:.5rem}
+.listing th,.listing td{border:1px solid #eee;padding:.4rem .5rem}
+</style>
+{% endblock %}

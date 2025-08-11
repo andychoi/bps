@@ -2,42 +2,60 @@ from django.apps import apps
 from django.core.management.base import BaseCommand
 from django.db import connection
 
-
 class Command(BaseCommand):
     help = "Clean up all BPS demo data in correct dependency order (with fast truncate for PlanningFact)"
 
     def handle(self, *args, **options):
         self.stdout.write("→ Truncating PlanningFact via raw SQL…")
-        with connection.cursor() as cursor:
-            cursor.execute('TRUNCATE TABLE "bps_planningfact" CASCADE;')
-        self.stdout.write(self.style.SUCCESS("   ● PlanningFact truncated"))
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute('TRUNCATE TABLE "bps_planningfact" CASCADE;')
+            self.stdout.write(self.style.SUCCESS("   ● PlanningFact truncated"))
+        except Exception as e:
+            self.stderr.write(f"   ⚠️ Could not TRUNCATE PlanningFact: {e}. Will cascade via deletes.")
 
-        # Delete everything else in dependency-safe order
+        # Delete children → parents
         to_delete = [
             ("bps", "DataRequestLog"),
-            ("bps", "PlanningFactDimension"),
+            # ("bps", "PlanningFactDimension"),  # removed in refactor
             ("bps", "DataRequest"),
             ("bps", "PlanningSession"),
+
             ("bps", "FormulaRunEntry"),
             ("bps", "FormulaRun"),
+
             ("bps", "ScenarioFunction"),
             ("bps", "ScenarioStep"),
             ("bps", "ScenarioStage"),
             ("bps", "ScenarioOrgUnit"),
             ("bps", "PlanningScenario"),
             ("bps", "PlanningStage"),
+
             ("bps", "PeriodGrouping"),
+
+            # New: per-instance overrides must be deleted before PLD/PLY/PL
+            ("bps", "LayoutDimensionOverride"),
+
+            # Instance before template
+            ("bps", "PlanningLayoutYear"),
+
+            # Template-level attachments
             ("bps", "PlanningLayoutDimension"),
             ("bps", "PlanningKeyFigure"),
-            ("bps", "PlanningDimension"),
-            ("bps", "PlanningLayoutYear"),
+
+            # Removed legacy model
+            # ("bps", "PlanningDimension"),
+
             ("bps", "PlanningLayout"),
+
             ("bps", "PlanningFunction"),
             ("bps", "Formula"),
             ("bps", "SubFormula"),
             ("bps", "ReferenceData"),
+
             ("bps", "RateCard"),
             ("bps", "Position"),
+
             ("bps", "Employee"),
             ("bps", "Contractor"),
             ("bps", "MSPStaff"),
@@ -48,11 +66,13 @@ class Command(BaseCommand):
             ("bps", "CostCenter"),
             ("bps", "CBU"),
             ("bps", "OrgUnit"),
+
             ("bps", "ConversionRate"),
             ("bps", "UnitOfMeasure"),
             ("bps", "KeyFigure"),
             ("bps", "GlobalVariable"),
             ("bps", "Constant"),
+
             ("bps", "Period"),
             ("bps", "Version"),
             ("bps", "Year"),

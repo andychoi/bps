@@ -1,6 +1,6 @@
 from django.db import models, transaction
 from django.conf import settings
-from .models_layout import PlanningLayoutYear, PlanningLayout
+# from .models_layout import PlanningLayoutYear, PlanningLayout
 from .models_dimension import OrgUnit
 
 class PlanningStage(models.Model):
@@ -42,7 +42,7 @@ class PlanningScenario(models.Model):
     """
     code        = models.CharField(max_length=50, unique=True)
     name        = models.CharField(max_length=200)
-    layout_year = models.ForeignKey(PlanningLayoutYear, on_delete=models.CASCADE)
+    layout_year = models.ForeignKey('bps.PlanningLayoutYear', on_delete=models.CASCADE)
     org_units   = models.ManyToManyField(OrgUnit, through='ScenarioOrgUnit')
     stages      = models.ManyToManyField(PlanningStage, through='ScenarioStage')
     functions   = models.ManyToManyField('bps.PlanningFunction', through='ScenarioFunction')
@@ -68,7 +68,7 @@ class ScenarioStage(models.Model):
 class ScenarioStep(models.Model):
     scenario    = models.ForeignKey(PlanningScenario, on_delete=models.CASCADE)
     stage       = models.ForeignKey(PlanningStage, on_delete=models.CASCADE)
-    layout      = models.ForeignKey(PlanningLayout, on_delete=models.PROTECT)
+    layout      = models.ForeignKey('bps.PlanningLayout', on_delete=models.PROTECT)
     order       = models.PositiveSmallIntegerField()
 
     class Meta:

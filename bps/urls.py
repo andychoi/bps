@@ -13,6 +13,7 @@ from .views.views import (
 )
 
 from .views.manual_planning import ManualPlanningView
+from .api.views_lookup import header_options
 
 from .views.autocomplete import (
     LayoutAutocomplete, ContentTypeAutocomplete,
@@ -22,6 +23,8 @@ from .views.autocomplete import (
     UnitOfMeasureAutocomplete, LayoutYearAutocomplete,
     ServiceAutocomplete, KeyFigureAutocomplete, VersionAutocomplete,
 )
+
+from .views.views_planner import PlannerDashboard, act_as_start, act_as_stop, api_allowed_ous
 
 app_name = "bps"
 
@@ -73,6 +76,11 @@ urlpatterns = [
 
     # Global variables
     path("variables/",      VariableListView.as_view(),      name="variable_list"),
+
+    path("planner/", PlannerDashboard.as_view(), name="planner-dashboard"),
+    path("planner/act-as/<int:user_id>/", act_as_start, name="planner-act-as"),
+    path("planner/act-as/stop/", act_as_stop, name="planner-act-as-stop"),
+    path("api/allowed-ous/", api_allowed_ous, name="api-allowed-ous"),
 
     # Autocomplete endpoints
     path("autocomplete/layout/",      LayoutAutocomplete.as_view(),      name="layout-autocomplete"),

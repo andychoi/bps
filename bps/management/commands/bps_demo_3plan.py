@@ -18,52 +18,22 @@ from bps.models.models_layout import PlanningLayoutYear
 from bps.models.models_resource import Position, Skill, RateCard
 from bps.models.models_workflow import PlanningScenario, PlanningSession, ScenarioStep
 
-
 User = get_user_model()
 random.seed(42)
 
-# Generation dims (can include non-model “virtual dims” that will go into extra_dimensions_json)
-ROW_DIMS = {
-    "RES_FTE": ["Position", "Skill"],
-    # below: InternalOrder + Skill are real model dims; resource_type/level/country are extra JSON dims
-    "RES_CON": ["InternalOrder", "ResourceType", "Skill", "Level", "Country"],
-    "SYS_DEMAND": ["Service", "Skill"],
-    "RES_ALLOC": ["Position", "Service"],
-    "SW_LICENSE": ["Service", "InternalOrder"],
-    "ADMIN_OVH": ["OrgUnit", "Service"],
-    "SRV_COST": ["Service"],
-}
-
-KF_DEFS = {
-    "RES_FTE": ["FTE", "MAN_MONTH"],
-    "RES_CON": ["MAN_MONTH", "COST"],
-    "SYS_DEMAND": ["MAN_MONTH"],
-    "RES_ALLOC": ["MAN_MONTH", "UTIL"],
-    "SW_LICENSE": ["LICENSE_VOLUME", "LICENSE_UNIT_PRICE", "LICENSE_COST"],
-    "ADMIN_OVH": ["ADMIN_OVERHEAD"],
-    "SRV_COST": ["COST", "LICENSE_COST", "ADMIN_OVERHEAD", "TOTAL_COST"],
-}
-
-
-def get_dim_values(dim_name):
-    if dim_name == "Position":
+def get_dim_values_for_model(Model):
+    if Model is Position:
         return list(Position.objects.all())
-    if dim_name == "InternalOrder":
+    if Model is InternalOrder:
         return list(InternalOrder.objects.all())
-    if dim_name == "Service":
+    if Model is Service:
         return list(Service.objects.filter(is_active=True))
-    if dim_name == "OrgUnit":
+    if Model is OrgUnit:
         return list(OrgUnit.objects.exclude(code="ROOT"))
-    if dim_name == "Skill":
+    if Model is Skill:
         return list(Skill.objects.all())
-    if dim_name == "ResourceType":
-        return [choice[0] for choice in RateCard.RESOURCE_CHOICES]
-    if dim_name == "Level":
-        return sorted({rc.level for rc in RateCard.objects.all()})
-    if dim_name == "Country":
-        return sorted({rc.country for rc in RateCard.objects.all()})
-    raise ValueError(f"Unknown dimension: {dim_name}")
-
+    # Unknown/unsupported template dimension – return empty to avoid explosion
+    return []
 
 class Command(BaseCommand):
     help = "Step 3: Populate each session with demo PlanningFact rows"
@@ -83,66 +53,67 @@ class Command(BaseCommand):
             self.stderr.write("❌ No superuser found; aborting.")
             return
 
-        # Guard: required constants
+        # Sanity: constants
         for name in ("INFLATION_RATE", "GROWTH_FACTOR"):
             if not Constant.objects.filter(name=name).exists():
                 self.stderr.write(f"❌ Missing constant {name}; run master load first.")
                 return
 
-        # Needed key figures
-        needed_kfs = {kf for codes in KF_DEFS.values() for kf in codes}
-        kf_qs = KeyFigure.objects.filter(code__in=needed_kfs).select_related("default_uom")
-        kf_map = {kf.code: kf for kf in kf_qs}
-        missing = needed_kfs - set(kf_map)
-        if missing:
-            self.stderr.write(f"⚠️ Missing KeyFigures (will skip): {', '.join(sorted(missing))}")
-
         periods = list(Period.objects.order_by("order"))
 
-        lys = (
-            PlanningLayoutYear.objects.select_related("layout", "year", "version").prefetch_related("org_units")
-        )
+        lys = PlanningLayoutYear.objects.select_related("layout", "year", "version").prefetch_related("org_units")
         if options.get("year_code"):
             lys = lys.filter(year__code=options["year_code"])
 
         for ply in lys:
-            layout_code = ply.layout.code
-            dims = ROW_DIMS.get(layout_code, [])
-            raw_kfs = KF_DEFS.get(layout_code, [])
-            kf_codes = [c for c in raw_kfs if c in kf_map]
-            if not kf_codes:
-                self.stdout.write(f"→ No valid KeyFigures for {layout_code}; skipping.")
+            layout = ply.layout
+            layout_code = layout.code
+
+            # Template-level dims & KFs
+            dims_qs = layout.dimensions.filter(is_row=True).select_related("content_type").order_by("order")
+            dim_models = [d.content_type.model_class() for d in dims_qs]
+
+            pkf_qs = layout.key_figures.select_related("key_figure").order_by("display_order")
+            kf_objs = [pkf.key_figure for pkf in pkf_qs]
+            if not kf_objs:
+                self.stdout.write(f"→ No KeyFigures linked to {layout_code}; skipping.")
                 continue
 
-            self.stdout.write(
-                f"→ Generating for {layout_code} / {ply.year.code} / {ply.version.code}"
-            )
+            self.stdout.write(f"→ Generating for {layout_code} / {ply.year.code} / {ply.version.code}")
 
+            # Scenario/session plumbing
             try:
                 scenario = PlanningScenario.objects.get(layout_year=ply)
             except PlanningScenario.DoesNotExist:
                 self.stderr.write(f"⚠️ No scenario for {ply}; skipping.")
                 continue
-
             first_step = ScenarioStep.objects.filter(scenario=scenario).order_by("order").first()
 
+            # Precompute value sets for dims
+            dim_values = [get_dim_values_for_model(Model) for Model in dim_models]
+
             for org in ply.org_units.all():
-                # Build dim combos
+                # Build combinations
                 if layout_code == "RES_CON":
+                    # Keep richer mix for contractor layout
                     ios = list(InternalOrder.objects.filter(cc_code=org.code))
                     rc_combos = [
                         (rc.resource_type, rc.skill, rc.level, rc.country)
                         for rc in RateCard.objects.all()
                     ]
-                    combos = [(io, rt, sk, lv, co) for io in ios for (rt, sk, lv, co) in rc_combos]
-                    # limit to a reasonable sample to avoid huge datasets
-                    if len(combos) > 20:
-                        combos = random.sample(combos, 20)
+                    combos = [(io, sk) for io in ios for (_, sk, _, _) in rc_combos]
+                    # reduce cardinality
+                    if len(combos) > 40:
+                        combos = random.sample(combos, 40)
+                    extra_template = [
+                        ("ResourceType", [rc.resource_type for rc in RateCard.objects.all()]),
+                        ("Level",        sorted({rc.level for rc in RateCard.objects.all()})),
+                        ("Country",      sorted({rc.country for rc in RateCard.objects.all()})),
+                    ]
                 else:
-                    vals = {d: get_dim_values(d) for d in dims}
-                    combos = list(product(*(vals[d] for d in dims))) if dims else [()]
+                    combos = list(product(*dim_values)) if dim_values else [()]
+                    extra_template = []
 
-                # Session
                 sess, created = PlanningSession.objects.get_or_create(
                     scenario=scenario,
                     org_unit=org,
@@ -166,7 +137,6 @@ class Command(BaseCommand):
                             sess.freeze(admin)
                         sess.save(update_fields=["current_step", "status", "frozen_by", "frozen_at"])
 
-                # DataRequest
                 desc = "Historical 2025" if ply.version.code == "ACTUAL" else f"{ply.version.code} Update"
                 dr, _ = DataRequest.objects.get_or_create(
                     session=sess,
@@ -174,7 +144,6 @@ class Command(BaseCommand):
                     defaults={"created_by": admin, "action_type": "OVERWRITE" if ply.version.code == "ACTUAL" else "DELTA"},
                 )
 
-                # Index existing rows for idempotency
                 existing = {}
                 qs = PlanningFact.objects.filter(session=sess, request=dr, version=ply.version)
                 for f in qs.only(
@@ -192,31 +161,41 @@ class Command(BaseCommand):
                 to_create, to_update = [], []
 
                 for combo in combos:
+                    combo = combo if isinstance(combo, tuple) else (combo,)
+
+                    # Build extra json (use model class names as keys)
                     extra = {}
-                    for dim, val in zip(dims, combo):
-                        if dim == "Service":
+                    for Model, val in zip(dim_models, combo):
+                        if Model is Service:
                             continue
-                        # store ids/values for extra dims (non-model dims come as strings/tuples)
-                        extra[dim] = getattr(val, "id", val)
+                        extra[Model.__name__] = getattr(val, "id", val)
+
+                    # Add RES_CON synthetic extras
+                    if layout_code == "RES_CON" and extra_template:
+                        # Sample one consistent set per row
+                        rt = random.choice(extra_template[0][1])
+                        lvl = random.choice(extra_template[1][1])
+                        ctry = random.choice(extra_template[2][1])
+                        extra.update({"ResourceType": rt, "Level": lvl, "Country": ctry})
 
                     svc = None
-                    if "Service" in dims:
-                        svc = combo[dims.index("Service")]
+                    if Service in dim_models:
+                        svc = combo[dim_models.index(Service)]
 
                     for per in periods:
-                        for kf_code in kf_codes:
-                            if kf_code in ("FTE", "MAN_MONTH", "LICENSE_VOLUME"):
+                        for kf in kf_objs:
+                            # Simple random demo values by KF type
+                            if kf.code in ("FTE", "MAN_MONTH", "LICENSE_VOLUME"):
                                 val = Decimal(random.uniform(0.5, 3.0)).quantize(Decimal("0.01"))
-                            elif kf_code in ("COST", "LICENSE_COST", "ADMIN_OVERHEAD", "TOTAL_COST"):
+                            elif kf.code in ("COST", "LICENSE_COST", "ADMIN_OVERHEAD", "TOTAL_COST"):
                                 val = Decimal(random.uniform(1000, 10000)).quantize(Decimal("0.01"))
-                            elif kf_code == "LICENSE_UNIT_PRICE":
+                            elif kf.code == "LICENSE_UNIT_PRICE":
                                 val = Decimal(random.uniform(10, 200)).quantize(Decimal("0.01"))
-                            elif kf_code == "UTIL":
+                            elif kf.code == "UTIL":
                                 val = Decimal(random.uniform(50, 100)).quantize(Decimal("0.01"))
                             else:
                                 val = Decimal(random.uniform(1, 5)).quantize(Decimal("0.01"))
 
-                            kf = kf_map[kf_code]
                             row_key = (
                                 per.id,
                                 org.id,
