@@ -11,7 +11,7 @@ from rest_framework.response import Response
 from bps.models.models_layout import PlanningLayoutYear
 from bps.models.models import PlanningFact, Period, KeyFigure, DataRequest
 from bps.models.models_dimension import OrgUnit, Service
-from bps.models.models_workflow import PlanningSession
+from bps.models.models_workflow import PlanningSession, PlanningScenario, ScenarioStep
 
 MONTH_ALIASES = {
     "JAN": "01", "FEB": "02", "MAR": "03", "APR": "04",
@@ -244,14 +244,13 @@ class PlanningGridBulkUpdateView(APIView):
         ser.is_valid(raise_exception=True)
         payload = ser.validated_data
 
-        # accept layout_year or layout
+        # accept both layout_year (preferred) and legacy layout
         ly_id = payload.get("layout_year") or payload.get("layout")
         ly = get_object_or_404(PlanningLayoutYear, pk=ly_id)
-        
-        delete_zeros = payload.get("delete_zeros", True)
-        delete_blanks = payload.get("delete_blanks", True)
-        header_defaults = payload.get("headers", {}) or {}
 
+        delete_zeros   = payload.get("delete_zeros", True)
+        delete_blanks  = payload.get("delete_blanks", True)
+        header_defaults = payload.get("headers", {}) or {}
         errors, updated, deleted = [], 0, 0
         dr_by_sess = {}
 
@@ -262,7 +261,7 @@ class PlanningGridBulkUpdateView(APIView):
 
         for upd in payload["updates"]:
             try:
-                # --- resolve org / service (accept PK or code) ---
+                # ---- resolve OU / Service / extra dims
                 org_val = upd.get("org_unit") or header_defaults.get("orgunit") or header_defaults.get("org_unit")
                 if not org_val:
                     raise ValueError("Missing 'org_unit' (row or headers)")
@@ -274,7 +273,6 @@ class PlanningGridBulkUpdateView(APIView):
                     svc_val = header_defaults.get("service")
                 svc = self._service_from_any(svc_val)
 
-                # --- extra row dimensions (PKs or str) ---
                 extra = {}
                 for key in row_dim_keys:
                     val = upd.get(key)
@@ -286,21 +284,37 @@ class PlanningGridBulkUpdateView(APIView):
                         except (TypeError, ValueError):
                             extra[key] = val
 
-                # Session for this org in the selected layout-year
-                session = PlanningSession.objects.get(
+                # ---- find or create a session for (layout_year, org)
+                session = PlanningSession.objects.filter(
                     scenario__layout_year=ly, org_unit=org
-                )
+                ).select_related("scenario").first()
 
-                # --- delete entire slice (fast path) ---
+                if not session:
+                    scenario = PlanningScenario.objects.filter(
+                        layout_year=ly, is_active=True
+                    ).order_by("id").first()
+                    if not scenario:
+                        raise ValueError("No active scenario for this layout/year/version.")
+                    first_step = ScenarioStep.objects.filter(
+                        scenario=scenario
+                    ).order_by("order").first()
+                    if not first_step:
+                        raise ValueError("Scenario has no steps configured.")
+                    session = PlanningSession.objects.create(
+                        scenario=scenario,
+                        org_unit=org,
+                        created_by=request.user,
+                        current_step=first_step,
+                    )
+
+                # ---- delete whole row?
                 if str(upd.get("delete_row")).lower() in {"1", "true", "yes"}:
                     qs = PlanningFact.objects.filter(
                         session__scenario__layout_year=ly,
                         org_unit=org,
                     )
-                    # Only filter by service if the client actually provided it
                     if svc_is_provided:
                         qs = qs.filter(service=svc)
-                    # tolerant match on extra dims
                     if extra:
                         cond = Q()
                         for k, v in extra.items():
@@ -309,14 +323,13 @@ class PlanningGridBulkUpdateView(APIView):
                         qs = qs.filter(cond)
                     else:
                         qs = qs.filter(extra_dimensions_json={})
-
                     cnt = qs.count()
                     if cnt:
                         qs.delete()
                         deleted += cnt
                     continue
 
-                # --- resolve period / key-figure for normal update or cell delete ---
+                    # ---- upsert a single cell
                 per_code_raw = upd.get("period")
                 if not per_code_raw:
                     raise ValueError("Missing 'period' code")
@@ -330,8 +343,6 @@ class PlanningGridBulkUpdateView(APIView):
 
                 raw_val = upd.get("value", None)
                 is_blank = (raw_val is None) or (isinstance(raw_val, str) and raw_val.strip() == "")
-
-                # --- delete-on-blank or zero ---
                 if (delete_blanks and is_blank) or (delete_zeros and not is_blank and Decimal(str(raw_val)) == 0):
                     qs = PlanningFact.objects.filter(
                         session=session, org_unit=org, service=svc,
@@ -343,9 +354,7 @@ class PlanningGridBulkUpdateView(APIView):
                         deleted += cnt
                     continue
 
-                # --- upsert path ---
                 val = Decimal(str(raw_val))
-
                 dr = dr_by_sess.get(session.pk)
                 if not dr:
                     dr = DataRequest.objects.create(

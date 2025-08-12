@@ -6,7 +6,7 @@ from bps.models.models_layout import PlanningLayoutYear, LayoutDimensionOverride
 from bps.models.models_dimension import Service, OrgUnit
 from bps.models.models import KeyFigure
 import json
-
+from bps.models.models_workflow import PlanningSession
 
 class ManualPlanningView(TemplateView):
     template_name = "bps/manual_planning.html"
@@ -93,7 +93,13 @@ class ManualPlanningView(TemplateView):
 
         # ---- Lookup data for common dims (used if they appear as row dims) ----
         services = list(Service.objects.filter(is_active=True).values("code", "name"))
-        org_units = list(OrgUnit.objects.values("code", "name"))
+        org_units = list(
+            OrgUnit.objects.filter(
+                id__in=PlanningSession.objects.filter(
+                    scenario__layout_year=ly
+                ).values_list("org_unit_id", flat=True)
+            ).values("code", "name")
+        )
 
         # only group when row dims have a group_priority
         grouping_dims_qs = (
@@ -113,11 +119,12 @@ class ManualPlanningView(TemplateView):
             _field_for_key(d["key"]) for d in _driver_payload(row_dims_qs)
         }
 
-        configured_fields = [_field_for_key(ld.content_type.model) for ld in grouping_dims_qs]
-        row_group_fields = [f for f in configured_fields if f in row_field_candidates]
-        # NOTE: if no priorities are set, row_group_fields will be [], so the JS won’t enable grouping.
+        if grouping_dims_qs.exists():
+            configured_fields = [_field_for_key(ld.content_type.model) for ld in grouping_dims_qs]
+            row_group_fields = [f for f in configured_fields if f in row_field_candidates]
+        else:
+            row_group_fields = []  # ✅ no fallback to row order; grouping OFF
 
-        # Read "start open" off layout_year first, then layout, else default False
         row_group_start_open = bool(
             getattr(ly, "group_start_open", getattr(ly.layout, "group_start_open", False))
         )
