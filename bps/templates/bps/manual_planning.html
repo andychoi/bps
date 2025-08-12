@@ -71,11 +71,20 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
   const headerDefaults = {{ header_defaults_js|safe }};
   const services       = {{ services_js|safe }};
   const orgUnits       = {{ org_units_js|safe }};
-  // Grouping config provided by server (may be [])
+  // Grouping config (may be [])
   const rowGroupFields = {{ row_group_fields_js|safe }} || [];
   const rowGroupStartOpen = {{ row_group_start_open_js|safe }};
 
   // ---- Helpers ----
+  function getCookie(name) {
+    let v = null;
+    document.cookie.split(';').forEach(c => {
+      c = c.trim();
+      if (c.startsWith(name + '=')) v = decodeURIComponent(c.slice(name.length + 1));
+    });
+    return v;
+  }
+
   const toMap = (rows, vKey, lKey) =>
     rows.reduce((acc, r) => (acc[String(r[vKey])] = String(r[lKey]), acc), {});
   const orgUnitMap = toMap(orgUnits, "code", "name");
@@ -88,9 +97,17 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
   const bucketFirstPeriodMap = Object.fromEntries(
     buckets.map(b => [b.code, (b.periods && b.periods[0]) || b.code])
   );
+
   const rowKeys = rowDrivers.map(d => d.key);
   const hasOrgUnitCol = rowKeys.includes("orgunit");
   const hasServiceCol = rowKeys.includes("service");
+
+  // dimension field names present in the table rows
+  const dimFieldNames = [
+    ...(hasOrgUnitCol ? ["org_unit_code"] : []),
+    ...(hasServiceCol ? ["service_code"] : []),
+    ...rowDrivers.filter(d => d.key !== "orgunit" && d.key !== "service").map(d => `${d.key}_code`)
+  ];
 
   function safeLookup(map) {
     return function(cell) {
@@ -100,6 +117,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       return Object.prototype.hasOwnProperty.call(map, k) ? map[k] : "";
     };
   }
+
   function listEditorParams(valuesMap) {
     return {
       values: valuesMap,
@@ -111,6 +129,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       verticalNavigation: "table",
     };
   }
+
   function readHeaderSelections() {
     const selected = {};
     document.querySelectorAll(".header-select").forEach(sel => {
@@ -120,6 +139,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     });
     return selected;
   }
+
   function setHeaderDefaults() {
     Object.entries(headerDefaults || {}).forEach(([key, val]) => {
       const el = document.getElementById(`hdr-${key}`);
@@ -182,7 +202,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       hozAlign: "right",
       bottomCalc: "sum",
       formatter: "money",
-      formatterParams: { symbol: "", precision: (kfMeta?.[kf]?.decimals ?? 2) },
+      formatterParams: { symbol: "", precision: (kfMeta && kfMeta[kf] && typeof kfMeta[kf].decimals === "number") ? kfMeta[kf].decimals : 2 },
     })),
   }));
 
@@ -308,20 +328,103 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     } catch (e) { console.error(e); }
   });
 
-  // ---- Save edited numeric cells ----
+  // ---- Utility: send updates (PATCH → fallback POST) ----
+  async function sendGridUpdates(payload){
+    // Prefer PATCH (view accepts PATCH/POST), fallback to POST for envs that block PATCH.
+    let res = await fetch(updateURL, {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },
+      body: JSON.stringify(payload),
+    });
+    if (res.status === 404 || res.status === 405){
+      res = await fetch(updateURL, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },
+        body: JSON.stringify(payload),
+      });
+    }
+    return res;
+  }
+
+  // ---- Save logic (numeric changes + dimension "move") ----
   const VALUE_FIELDS = buckets.flatMap(b => kfCodes.map(kf => `${b.code}_${kf}`));
+
+  function dimsFromRowData(d, headerSelected){
+    const base = {}
+    // org unit
+    const orgFromRow = hasOrgUnitCol ? d.org_unit_code : null;
+    const orgFromHdr = headerSelected.orgunit || null;
+    base.org_unit = orgFromRow || orgFromHdr || null;
+    // service
+    const svcFromRow = hasServiceCol ? d.service_code : null;
+    const svcFromHdr = headerSelected.service || null;
+    base.service = svcFromRow || svcFromHdr || null;
+    // extra row dims
+    rowDrivers
+      .filter(dr => dr.key !== "orgunit" && dr.key !== "service")
+      .forEach(dr => { base[dr.key] = d[`${dr.key}_code`] ?? null; });
+    // header dims (non-row)
+    headerDrivers
+      .filter(hd => hd.key !== "orgunit" && hd.key !== "service")
+      .forEach(hd => { base[hd.key] = headerSelected[hd.key] ?? null; });
+    return base;
+  }
 
   document.getElementById("btn-save").addEventListener("click", () => {
     const editedCells = table.getEditedCells();
+
+    // separate numeric and dimension edits
     const valueCells = editedCells.filter(c => VALUE_FIELDS.includes(c.getField()));
-    if (!valueCells.length) { alert("No numeric changes to save."); return; }
+    const dimCells   = editedCells.filter(c => dimFieldNames.includes(c.getField()));
 
     const headerSelected = readHeaderSelections();
     const updates = [];
     const missingOrgRows = new Set();
 
-    for (const cell of valueCells) {
+    // 1) Handle rows where *any* dimension changed: move all existing numeric values
+    const rowsWithDimChange = Array.from(new Set(dimCells.map(c => c.getRow())));
+    for (const row of rowsWithDimChange){
+      const dNow = row.getData();
+
+      // reconstruct "old" dimensions by taking current data but replacing edited fields with their oldValue
+      const oldD = { ...dNow };
+      for (const c of dimCells.filter(cc => cc.getRow() === row)){
+        oldD[c.getField()] = c.getOldValue();
+      }
+
+      const newDims = dimsFromRowData(dNow, headerSelected);
+      const oldDims = dimsFromRowData(oldD, headerSelected);
+
+      // org unit must be present (new and old)
+      if (!newDims.org_unit || !oldDims.org_unit){
+        missingOrgRows.add(row.getPosition(true));
+        continue;
+      }
+
+      // for every numeric column that currently has a value, create (new) and delete (old)
+      for (const field of VALUE_FIELDS){
+        const sep = field.indexOf("_");
+        const bucketCode = field.slice(0, sep);
+        const kf = field.slice(sep + 1);
+        const period = bucketFirstPeriodMap[bucketCode] || bucketCode;
+        const val = dNow[field];
+        if (val == null || val === "") continue;
+
+        // write new
+        updates.push({ ...newDims, period, key_figure: kf, value: val });
+        // delete old
+        updates.push({ ...oldDims, period, key_figure: kf, value: "" });
+      }
+    }
+
+    // 2) Handle plain numeric cell edits (skip rows that had dimension moves above)
+    const skipRows = new Set(rowsWithDimChange.map(r => r.getIndex()));
+    for (const cell of valueCells){
       const row = cell.getRow();
+      if (skipRows.has(row.getIndex())) continue;
+
       const d = row.getData();
       const field = cell.getField();
       const sep = field.indexOf("_");
@@ -329,26 +432,11 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       const kf = field.slice(sep + 1);
       const period = bucketFirstPeriodMap[bucketCode] || bucketCode;
 
-      const base = { layout: layoutId };
-      const orgFromRow = hasOrgUnitCol ? d.org_unit_code : null;
-      const orgFromHdr = headerSelected.orgunit || null;
-      base.org_unit = orgFromRow || orgFromHdr || null;
-      if (!base.org_unit) {
+      const base = dimsFromRowData(d, headerSelected);
+      if (!base.org_unit){
         missingOrgRows.add(row.getPosition(true));
         continue;
       }
-      const svcFromRow = hasServiceCol ? d.service_code : null;
-      const svcFromHdr = headerSelected.service || null;
-      base.service = svcFromRow || svcFromHdr || null;
-
-      rowDrivers
-        .filter(dr => dr.key !== "orgunit" && dr.key !== "service")
-        .forEach(dr => { base[dr.key] = d[`${dr.key}_code`] ?? null; });
-
-      headerDrivers
-        .filter(hd => hd.key !== "orgunit" && hd.key !== "service")
-        .forEach(hd => { base[hd.key] = headerSelected[hd.key] ?? null; });
-
       updates.push({ ...base, period, key_figure: kf, value: cell.getValue() });
     }
 
@@ -361,20 +449,19 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       return;
     }
 
-    fetch(updateURL, {
-      method: "PATCH",
-      credentials: "include",
-      headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },
-      body: JSON.stringify({
-        layout: layoutId,
-        headers: headerSelected,
-        delete_zeros: true,
-        delete_blanks: true,
-        updates,
-      }),
+    sendGridUpdates({
+      layout_year: layoutId,               // the API also accepts "layout_year"
+      headers: headerSelected,
+      delete_zeros: true,
+      delete_blanks: true,
+      updates,
     })
     .then(async (res) => {
       const data = await res.json().catch(() => ({}));
+      if (res.status === 404 && data && data.detail && /PlanningLayoutYear/i.test(String(data.detail))) {
+        alert("Save failed: bad layout id in request. Please refresh the page.");
+        return;
+      }
       if (res.status === 207 || (Array.isArray(data.errors) && data.errors.length)) {
         const msg = [
           "Some updates failed:",
@@ -382,7 +469,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
           (data.errors || []).length > 10 ? `…and ${data.errors.length - 10} more` : ""
         ].join("\n");
         alert(msg);
-        table.replaceData();  // reload
+        table.replaceData(apiURL, buildAjaxParams());
         return;
       }
       if (!res.ok) throw new Error(data.detail || "Save failed");
@@ -396,17 +483,8 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
   function deleteRow(row) {
     const d = row.getData();
     const headerSelected = readHeaderSelections();
-    const orgUnit = (hasOrgUnitCol ? d.org_unit_code : null) || headerSelected.orgunit || null;
-    if (!orgUnit) { alert("Org Unit is required (from header or row) to delete this slice."); return; }
-    const service = (hasServiceCol ? d.service_code : null) || headerSelected.service || null;
-
-    const base = { layout: layoutId, org_unit: orgUnit, service };
-    rowDrivers
-      .filter(dr => dr.key !== "orgunit" && dr.key !== "service")
-      .forEach(dr => { base[dr.key] = d[`${dr.key}_code`] ?? null; });
-    headerDrivers
-      .filter(hd => hd.key !== "orgunit" && hd.key !== "service")
-      .forEach(hd => { base[hd.key] = headerSelected[hd.key] ?? null; });
+    const base = dimsFromRowData(d, headerSelected);
+    if (!base.org_unit) { alert("Org Unit is required (from header or row) to delete this slice."); return; }
 
     const updates = [];
     for (const field of VALUE_FIELDS) {
@@ -419,17 +497,12 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     if (!updates.length) return;
     if (!confirm("Delete this entire row (all months/key figures) from this header slice?")) return;
 
-    fetch(updateURL, {
-      method: "PATCH",
-      credentials: "include",
-      headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },
-      body: JSON.stringify({
-        layout: layoutId,
-        headers: headerSelected,
-        delete_zeros: true,
-        delete_blanks: true,
-        updates,
-      }),
+    sendGridUpdates({
+      layout: layoutId,
+      headers: headerSelected,
+      delete_zeros: true,
+      delete_blanks: true,
+      updates,
     })
     .then(async (res) => {
       const data = await res.json().catch(() => ({}));
@@ -437,18 +510,9 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
         const msg = (data && (data.detail || (data.errors && JSON.stringify(data.errors)))) || res.statusText;
         throw new Error(msg);
       }
-      try { table.deleteRow(row); } catch (_) { table.replaceData(); }
+      try { table.deleteRow(row); } catch (_) { table.replaceData(apiURL, buildAjaxParams()); }
     })
     .catch(err => { console.error(err); alert("Failed to delete row."); });
-  }
-
-  function getCookie(name) {
-    let v = null;
-    document.cookie.split(';').forEach(c => {
-      c = c.trim();
-      if (c.startsWith(name + '=')) v = decodeURIComponent(c.slice(name.length + 1));
-    });
-    return v;
   }
 })();
 </script>

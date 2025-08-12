@@ -4,10 +4,15 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.renderers import JSONRenderer
 from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework import status
+import logging
+from math import ceil
+from django.core.paginator import Paginator
 
 # import the layout‐year model
 from bps.models.models_layout import PlanningLayoutYear
 from bps.models.models import PlanningFact, Version
+from bps.models.models_workflow import PlanningSession
 
 from .serializers import PlanningFactPivotRowSerializer
 from .utils import pivot_facts_grouped
@@ -96,3 +101,74 @@ class PlanningFactPivotedAPIView_OLD(APIView):
         return Response(pivoted)
         # serializer = PlanningFactPivotRowSerializer(pivoted, many=True)
         # return Response(serializer.data)
+
+log = logging.getLogger(__name__)
+
+class SessionFactsPageAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, pk):
+        try:
+            # Tabulator remote sends ?page=&size= by default
+            try:
+                page = int(request.GET.get("page", 1))
+            except (TypeError, ValueError):
+                page = 1
+            try:
+                size = int(request.GET.get("size", 25))
+            except (TypeError, ValueError):
+                size = 25
+            if size <= 0:
+                size = 25
+
+            sess = get_object_or_404(PlanningSession, pk=pk)
+
+            qs = (
+                PlanningFact.objects
+                .filter(session=sess)
+                .select_related(
+                    "period", "key_figure", "uom", "ref_uom",
+                    "org_unit", "service", "account"
+                )
+                .order_by("period__order", "key_figure__code", "service__name")
+            )
+
+            paginator = Paginator(qs, size)
+            page_obj  = paginator.get_page(page)
+
+            rows = []
+            for f in page_obj.object_list:
+                # Safe number conversion (Decimal -> float)
+                def f2(x):
+                    try:
+                        return float(x)
+                    except Exception:
+                        return None
+
+                rows.append({
+                    "id": f.id,
+                    "org_unit":   getattr(f.org_unit, "name", None),
+                    "service":    getattr(f.service, "name", None),
+                    "account":    getattr(f.account, "name", None),
+                    "period":     getattr(f.period, "code", None),
+                    "key_figure": getattr(f.key_figure, "code", None),
+                    "value":      f2(f.value),
+                    "uom":        getattr(f.uom, "code", None),
+                    "ref_value":  f2(f.ref_value),
+                    "ref_uom":    getattr(f.ref_uom, "code", None),
+                    "extra_dimensions": f.extra_dimensions_json or {},
+                })
+
+            return Response({
+                # Tabulator remote expects these keys by default
+                "last_page": max(1, paginator.num_pages),
+                "last_row": paginator.count,
+                "data": rows,
+            })
+        except Exception as e:
+            # Log full stack trace to server logs; return readable JSON to client
+            log.exception("SessionFactsPageAPIView failed")
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

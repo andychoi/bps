@@ -1,5 +1,4 @@
-django app for business planning (made by referencing sap bw-bps or sap sac planning), 
-here are app codes, wait for my next prompt:
+# Python Project Summary: bps
 
 ## Folder Structure
 ```text
@@ -40,6 +39,7 @@ here are app codes, wait for my next prompt:
         - planning_dashboard.html
     - bps/
       - _action_reset.html
+      - _paginator.html
       - _tabulator.html
       - base.html
       - constant_list.html
@@ -1250,6 +1250,10 @@ class PlanningLayoutDimension(models.Model):
     )
     order         = models.PositiveSmallIntegerField(default=0,
                       help_text="Defines the sequence in the grid")
+    group_priority = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="1,2,3… to enable nested row grouping (lower = outer); leave blank to not group by this dimension."
+    )
     class Meta:
         ordering = ["order", "id"]
         unique_together = ("layout", "content_type", "is_row", "is_column", "is_header")
@@ -1665,6 +1669,96 @@ function resetData() {
   });
 }
 </script>
+```
+
+### `templates/bps/_paginator.html`
+```html
+{% if is_paginated %}
+<div class="d-flex align-items-center flex-wrap gap-2 my-2">
+  <nav aria-label="Pagination">
+    <ul class="pagination pagination-sm mb-0">
+      {# First / Prev #}
+      <li class="page-item {% if not page_obj.has_previous %}disabled{% endif %}">
+        <a class="page-link"
+           href="?page=1{% if sanitized_query %}&{{ sanitized_query }}{% endif %}">First</a>
+      </li>
+      <li class="page-item {% if not page_obj.has_previous %}disabled{% endif %}">
+        {% if page_obj.has_previous %}
+          <a class="page-link"
+             href="?page={{ page_obj.previous_page_number }}{% if sanitized_query %}&{{ sanitized_query }}{% endif %}">Prev</a>
+        {% else %}
+          <span class="page-link">Prev</span>
+        {% endif %}
+      </li>
+      {# Numbered window: current-3 .. current+3, with edge links + ellipses #}
+      {% with start=page_obj.number|add:"-3" end=page_obj.number|add:"3" %}
+        {# clamp bounds in logic below #}
+        {# Show page 1 and leading ellipsis if window starts after 2 #}
+        {% if start|add:"-1" > 1 %}
+          <li class="page-item">
+            <a class="page-link"
+               href="?page=1{% if sanitized_query %}&{{ sanitized_query }}{% endif %}">1</a>
+          </li>
+          {% if start > 2 %}
+            <li class="page-item disabled"><span class="page-link">…</span></li>
+          {% endif %}
+        {% endif %}
+        {# Main window #}
+        {% for num in page_obj.paginator.page_range %}
+          {% if num >= start and num <= end and num >= 1 and num <= page_obj.paginator.num_pages %}
+            <li class="page-item {% if page_obj.number == num %}active{% endif %}">
+              {% if page_obj.number == num %}
+                <span class="page-link">{{ num }}</span>
+              {% else %}
+                <a class="page-link"
+                   href="?page={{ num }}{% if sanitized_query %}&{{ sanitized_query }}{% endif %}">{{ num }}</a>
+              {% endif %}
+            </li>
+          {% endif %}
+        {% endfor %}
+        {# Trailing ellipsis and last page if window ends before last-1 #}
+        {% if end|add:"1" < page_obj.paginator.num_pages %}
+          {% if end < page_obj.paginator.num_pages|add:"-1" %}
+            <li class="page-item disabled"><span class="page-link">…</span></li>
+          {% endif %}
+          <li class="page-item">
+            <a class="page-link"
+               href="?page={{ page_obj.paginator.num_pages }}{% if sanitized_query %}&{{ sanitized_query }}{% endif %}">{{ page_obj.paginator.num_pages }}</a>
+          </li>
+        {% endif %}
+      {% endwith %}
+      {# Next / Last #}
+      <li class="page-item {% if not page_obj.has_next %}disabled{% endif %}">
+        {% if page_obj.has_next %}
+          <a class="page-link"
+             href="?page={{ page_obj.next_page_number }}{% if sanitized_query %}&{{ sanitized_query }}{% endif %}">Next</a>
+        {% else %}
+          <span class="page-link">Next</span>
+        {% endif %}
+      </li>
+      <li class="page-item {% if not page_obj.has_next %}disabled{% endif %}">
+        <a class="page-link"
+           href="?page={{ page_obj.paginator.num_pages }}{% if sanitized_query %}&{{ sanitized_query }}{% endif %}">Last</a>
+      </li>
+    </ul>
+  </nav>
+  <form method="get" class="ms-auto d-flex align-items-center gap-2">
+    {# Preserve existing query params except page/page_size #}
+    {% for key, value in request.GET.items %}
+      {% if key != 'page' and key != 'page_size' %}
+        <input type="hidden" name="{{ key }}" value="{{ value }}">
+      {% endif %}
+    {% endfor %}
+    <input type="hidden" name="page" value="1">
+    <label for="pg-size" class="form-label mb-0 small text-nowrap">Rows per page</label>
+    <select id="pg-size" name="page_size" class="form-select form-select-sm" onchange="this.form.submit()">
+      {% for size in page_sizes %}
+        <option value="{{ size }}" {% if page_size == size %}selected{% endif %}>{{ size }}</option>
+      {% endfor %}
+    </select>
+  </form>
+</div>
+{% endif %}
 ```
 
 ### `templates/bps/_tabulator.html`
@@ -2309,11 +2403,15 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
   const layoutId       = {{ layout_year.pk }};
   const buckets        = {{ buckets_js|safe }};
   const kfCodes        = {{ kf_codes|safe }};
+  const kfMeta         = {{ kf_meta_js|safe }};
   const headerDrivers  = {{ header_drivers_js|safe }};
   const rowDrivers     = {{ row_drivers_js|safe }};
   const headerDefaults = {{ header_defaults_js|safe }};
   const services       = {{ services_js|safe }};
   const orgUnits       = {{ org_units_js|safe }};
+  // Grouping config provided by server (may be [])
+  const rowGroupFields = {{ row_group_fields_js|safe }} || [];
+  const rowGroupStartOpen = {{ row_group_start_open_js|safe }};
   // ---- Helpers ----
   const toMap = (rows, vKey, lKey) =>
     rows.reduce((acc, r) => (acc[String(r[vKey])] = String(r[lKey]), acc), {});
@@ -2323,14 +2421,12 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
   rowDrivers.forEach(d => { driverMaps[d.key] = toMap(d.choices, "id", "name"); });
   const headerMaps = {};
   headerDrivers.forEach(d => { headerMaps[d.key] = toMap(d.choices, "id", "name"); });
-  // Q1/Q2.. or "01" -> first month code
   const bucketFirstPeriodMap = Object.fromEntries(
     buckets.map(b => [b.code, (b.periods && b.periods[0]) || b.code])
   );
   const rowKeys = rowDrivers.map(d => d.key);
   const hasOrgUnitCol = rowKeys.includes("orgunit");
   const hasServiceCol = rowKeys.includes("service");
-  // ---------- fix: safe lookup to avoid console warnings ----------
   function safeLookup(map) {
     return function(cell) {
       const v = cell.getValue();
@@ -2350,7 +2446,6 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       verticalNavigation: "table",
     };
   }
-  // Read header selections
   function readHeaderSelections() {
     const selected = {};
     document.querySelectorAll(".header-select").forEach(sel => {
@@ -2366,39 +2461,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       if (el && val != null) el.value = String(val);
     });
   }
-  // Read-only “Context” cell text
-  function formatHeaderContext(hdrs) {
-    const parts = [];
-    for (const d of headerDrivers) {
-      const id = hdrs[d.key];
-      if (id == null || id === "") continue;
-      const display = (headerMaps[d.key] && headerMaps[d.key][String(id)]) || String(id);
-      parts.push(`${d.label}: ${display}`);
-    }
-    return parts.join(" • ");
-  }
-  // ---- Columns ----
-  const actionsCol = {
-    title: "",
-    field: "_actions",
-    width: 48,
-    headerSort: false,
-    hozAlign: "center",
-    frozen: true,
-    formatter: () => "🗑️",
-    cellClick: (_e, cell) => deleteRow(cell.getRow()),
-    tooltip: "Delete row (blank all values in this slice)",
-  };
-  const contextCol = {
-    title: "Context",
-    field: "_context",
-    width: 300,
-    frozen: true,
-    headerSort: false,
-    hozAlign: "left",
-    cssClass: "text-muted",
-    formatter: () => formatHeaderContext(readHeaderSelections()),
-  };
+  // ---- Columns (dimensions) ----
   const dimCols = [];
   if (hasOrgUnitCol) {
     dimCols.push({
@@ -2408,7 +2471,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       frozen: true,
       editor: "list",
       editorParams: listEditorParams(orgUnitMap),
-      formatter: safeLookup(orgUnitMap),                 // <— fixed
+      formatter: safeLookup(orgUnitMap),
       headerFilter: "list",
       headerFilterParams: { values: orgUnitMap, autocomplete: true, clearable: true },
       headerTooltip: "Search Org Units",
@@ -2421,7 +2484,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       width: 220,
       editor: "list",
       editorParams: listEditorParams(serviceMap),
-      formatter: safeLookup(serviceMap),                 // <— fixed
+      formatter: safeLookup(serviceMap),
       headerFilter: "list",
       headerFilterParams: { values: serviceMap, autocomplete: true, clearable: true },
       headerTooltip: "Search Services",
@@ -2436,94 +2499,122 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
         width: 180,
         editor: "list",
         editorParams: listEditorParams(driverMaps[d.key] || {}),
-        formatter: safeLookup(driverMaps[d.key] || {}),  // <— fixed
+        formatter: safeLookup(driverMaps[d.key] || {}),
         headerFilter: "list",
         headerFilterParams: { values: driverMaps[d.key] || {}, autocomplete: true, clearable: true },
         headerTooltip: `Search ${d.label}`,
       }))
   );
-  // Value columns (keep your existing editor/formatter if you added precision logic)
-  const valueCols = buckets.flatMap(b =>
-    kfCodes.map(kf => ({
-      title: `${b.name} ${kf}`,
+  // ---- Columns (values) — KEY FIGURE column groups ----
+  const valueColsGrouped = kfCodes.map(kf => ({
+    title: kf,
+    columns: buckets.map(b => ({
+      title: b.name,
       field: `${b.code}_${kf}`,
-      editor: overwriteNumberEditor, //editor: "number",
+      editor: overwriteNumberEditor,
       hozAlign: "right",
       bottomCalc: "sum",
       formatter: "money",
-      formatterParams: { symbol: "", precision: 2 }
-    }))
-  );
-  // A small editor that selects everything on focus and ensures the first key overwrites
-  function overwriteNumberEditor(cell, onRendered, success, cancel, params) {
+      formatterParams: { symbol: "", precision: (kfMeta?.[kf]?.decimals ?? 2) },
+    })),
+  }));
+  // Simple overwrite-on-first-key editor
+  function overwriteNumberEditor(cell, onRendered, success, cancel) {
     const input = document.createElement("input");
     input.type = "text";
     input.inputMode = "decimal";
     const curr = cell.getValue();
     input.value = (curr == null ? "" : curr);
     let firstKeyReplacePending = true;
-    function isPrintable(e) {
-      return e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
-    }
-    onRendered(() => {
-      // Robust focus + select (some browsers unselect after focus)
-      input.focus({ preventScroll: true });
-      input.select();
-      setTimeout(() => { try { input.select(); } catch(_){} }, 0);
-    });
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { success(input.value); return; }
-      if (e.key === "Escape") { cancel(); return; }
-      if (firstKeyReplacePending && isPrintable(e)) {
-        // Replace full content with first printable key
+    function isPrintable(e){ return e.key && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey; }
+    onRendered(() => { input.focus({preventScroll:true}); input.select(); setTimeout(()=>{try{input.select()}catch(_){}}) });
+    input.addEventListener("keydown",(e)=>{
+      if (e.key === "Enter"){ success(input.value); return; }
+      if (e.key === "Escape"){ cancel(); return; }
+      if (firstKeyReplacePending && isPrintable(e)){
         input.value = e.key;
-        // Place caret at end
-        try { input.setSelectionRange(input.value.length, input.value.length); } catch(_) {}
+        try{ input.setSelectionRange(input.value.length, input.value.length);}catch(_){}
         firstKeyReplacePending = false;
         e.preventDefault();
         return;
       }
     });
-    input.addEventListener("focus", () => {
-      // If user clicked instead of tabbing, still select for consistency
-      input.select();
-    });
     input.addEventListener("blur", () => success(input.value));
     return input;
   }
+  // Build query params for server request
   function buildAjaxParams() {
     const params = { layout: layoutId };
     const hdr = readHeaderSelections();
-    Object.entries(hdr).forEach(([k, v]) => {
-      if (v != null && v !== "") params[`header_${k}`] = v;
-    });
+    Object.entries(hdr).forEach(([k,v]) => { if (v != null && v !== "") params[`header_${k}`] = v; });
     return params;
   }
-  const table = new Tabulator("#planning-grid", {
+  // Helpful group header label: translate codes to display text
+  function labelForGroup(field, raw) {
+    if (raw == null || raw === "") return "(blank)";
+    const key = String(raw);
+    if (field === "org_unit_code") return orgUnitMap[key] || key;
+    if (field === "service_code")  return serviceMap[key]  || key;
+    const dimKey = field.endsWith("_code") ? field.slice(0, -5) : field; // remove _code
+    const map = driverMaps[dimKey] || {};
+    return map[key] || key;
+  }
+  // ---- Tabulator init ----
+  const tableOptions = {
     layout: "fitColumns",
-    pagination: "local",
-    paginationSize: 50,
     ajaxURL: apiURL,
     ajaxConfig: { credentials: "include" },
     ajaxParams: buildAjaxParams(),
-    ajaxResponse: (_url, _params, res) => res,
-    columns: [actionsCol, contextCol, ...dimCols, ...valueCols],
+    ajaxResponse: (_url, _params, res) => res,  // API returns array of rows
+    columns: [
+      {
+        title: "",
+        field: "_actions",
+        width: 48,
+        headerSort: false,
+        hozAlign: "center",
+        frozen: true,
+        formatter: () => "🗑️",
+        cellClick: (_e, cell) => deleteRow(cell.getRow()),
+        tooltip: "Delete row (blank all values in this slice)",
+      },
+      ...dimCols,
+      ...valueColsGrouped,  // grouped value columns by Key Figure
+    ],
+    pagination: "local",
+    paginationSize: 50,
     history: true,
     validationMode: "highlight",
-  });
+  };
+  // Enable grouping only if configured
+  const rowGroupingOn = Array.isArray(rowGroupFields) && rowGroupFields.length > 0;
+  if (rowGroupingOn) {
+    tableOptions.groupBy = rowGroupFields.length === 1 ? rowGroupFields[0] : rowGroupFields;
+    tableOptions.groupStartOpen = !!rowGroupStartOpen;
+    tableOptions.groupToggleElement = "header";
+    tableOptions.groupClosedShowCalcs = true;
+    tableOptions.groupHeader = function(value, count, _data, group) {
+      const field = typeof group.getField === "function" ? group.getField() : "";
+      const label = labelForGroup(field, value);
+      return `${label} <span class="text-muted">(${count})</span>`;
+    };
+  }
+  const table = new Tabulator("#planning-grid", tableOptions);
+  // Header defaults + Apply
   setHeaderDefaults();
   const btnApply = document.getElementById("btn-apply-headers");
   if (btnApply) {
     btnApply.addEventListener("click", (e) => {
       e.preventDefault();
       table.setData(apiURL, buildAjaxParams());
-      table.updateColumnDefinition("_context", {}); // refresh the Context text
-      table.redraw();
     });
   }
-  // ---- Add Row
+  // ---- Export / Add Row ----
+  document.getElementById("btn-xlsx").addEventListener("click", () => {
+    table.download("xlsx", `${window.ply_code || "planning"}.xlsx`, {sheetName: "Plan"});
+  });
   const blankRow = (() => {
-    const base = { _context: "" };
+    const base = {};
     if (hasOrgUnitCol) base["org_unit_code"] = null;
     if (hasServiceCol) base["service_code"] = null;
     rowDrivers
@@ -2532,20 +2623,15 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     buckets.forEach(b => { kfCodes.forEach(kf => { base[`${b.code}_${kf}`] = null; }); });
     return base;
   })();
-  document.getElementById("btn-xlsx").addEventListener("click", () => {
-    table.download("xlsx", `${window.ply_code || "planning"}.xlsx`, {sheetName: "Plan"});
-  });
   document.getElementById("add-row-btn").addEventListener("click", async () => {
     try {
       const row = await table.addRow({ ...blankRow }, true);
-      // focus first editable dim col if present
-      const first = dimCols[0];
-      if (first) row.getCell(first.field).edit();
+      const firstDim = dimCols[0];
+      if (firstDim) row.getCell(firstDim.field).edit();
     } catch (e) { console.error(e); }
   });
-  // Build value-field universe once
+  // ---- Save edited numeric cells ----
   const VALUE_FIELDS = buckets.flatMap(b => kfCodes.map(kf => `${b.code}_${kf}`));
-  // ---- Save (unchanged logic; sends only edited numeric cells) ----
   document.getElementById("btn-save").addEventListener("click", () => {
     const editedCells = table.getEditedCells();
     const valueCells = editedCells.filter(c => VALUE_FIELDS.includes(c.getField()));
@@ -2595,45 +2681,36 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       body: JSON.stringify({
         layout: layoutId,
         headers: headerSelected,
-        delete_zeros: true,    // explicit (defaults true on server)
-        delete_blanks: true,   // explicit (defaults true on server)
+        delete_zeros: true,
+        delete_blanks: true,
         updates,
       }),
     })
-      .then(async (res) => {
-        const data = await res.json().catch(() => ({}));
-        if (res.status === 207 || (Array.isArray(data.errors) && data.errors.length)) {
-          const msg = [
-            "Some updates failed:",
-            ...(data.errors || []).slice(0, 10).map(e => `• ${e.error}`),
-            (data.errors || []).length > 10 ? `…and ${data.errors.length - 10} more` : ""
-          ].join("\n");
-          alert(msg);
-          table.replaceData();  // reload
-          return;
-        }
-        if (!res.ok) throw new Error(data.detail || "Save failed");
-        alert(`All changes saved. Updated ${data.updated ?? "some"} cells.`);
-        table.setData(apiURL, buildAjaxParams());
-      })
-      .catch((err) => { console.error(err); alert("Save failed."); });
+    .then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 207 || (Array.isArray(data.errors) && data.errors.length)) {
+        const msg = [
+          "Some updates failed:",
+          ...(data.errors || []).slice(0, 10).map(e => `• ${e.error}`),
+          (data.errors || []).length > 10 ? `…and ${data.errors.length - 10} more` : ""
+        ].join("\n");
+        alert(msg);
+        table.replaceData();  // reload
+        return;
+      }
+      if (!res.ok) throw new Error(data.detail || "Save failed");
+      alert(`All changes saved. Updated ${data.updated ?? "some"} cells.`);
+      table.setData(apiURL, buildAjaxParams());
+    })
+    .catch((err) => { console.error(err); alert("Save failed."); });
   });
-  // ---- NEW: Delete Row (blank every value in this slice so API deletes matching facts) ----
+  // ---- Delete entire row slice (all months/KFs) ----
   function deleteRow(row) {
     const d = row.getData();
     const headerSelected = readHeaderSelections();
-    // Need org unit (from row or header) to resolve session
-    const orgFromRow = hasOrgUnitCol ? d.org_unit_code : null;
-    const orgFromHdr = headerSelected.orgunit || null;
-    const orgUnit = orgFromRow || orgFromHdr || null;
-    if (!orgUnit) {
-      alert("Org Unit is required (from header or row) to delete this slice.");
-      return;
-    }
-    const svcFromRow = hasServiceCol ? d.service_code : null;
-    const svcFromHdr = headerSelected.service || null;
-    const service = svcFromRow || svcFromHdr || null;
-    // Build a base payload with both row and header dims
+    const orgUnit = (hasOrgUnitCol ? d.org_unit_code : null) || headerSelected.orgunit || null;
+    if (!orgUnit) { alert("Org Unit is required (from header or row) to delete this slice."); return; }
+    const service = (hasServiceCol ? d.service_code : null) || headerSelected.service || null;
     const base = { layout: layoutId, org_unit: orgUnit, service };
     rowDrivers
       .filter(dr => dr.key !== "orgunit" && dr.key !== "service")
@@ -2641,14 +2718,13 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     headerDrivers
       .filter(hd => hd.key !== "orgunit" && hd.key !== "service")
       .forEach(hd => { base[hd.key] = headerSelected[hd.key] ?? null; });
-    // Generate one blank update per value field
     const updates = [];
     for (const field of VALUE_FIELDS) {
       const sep = field.indexOf("_");
       const bucketCode = field.slice(0, sep);
       const kf = field.slice(sep + 1);
       const period = bucketFirstPeriodMap[bucketCode] || bucketCode;
-      updates.push({ ...base, period, key_figure: kf, value: "" }); // blank -> delete on server
+      updates.push({ ...base, period, key_figure: kf, value: "" });
     }
     if (!updates.length) return;
     if (!confirm("Delete this entire row (all months/key figures) from this header slice?")) return;
@@ -2664,19 +2740,15 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
         updates,
       }),
     })
-      .then(async (res) => {
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          const msg = (data && (data.detail || (data.errors && JSON.stringify(data.errors)))) || res.statusText;
-          throw new Error(msg);
-        }
-        // Optimistic UI: remove row locally; fallback to reload
-        try { table.deleteRow(row); } catch (_) { table.replaceData(); }
-      })
-      .catch(err => {
-        console.error(err);
-        alert("Failed to delete row.");
-      });
+    .then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = (data && (data.detail || (data.errors && JSON.stringify(data.errors)))) || res.statusText;
+        throw new Error(msg);
+      }
+      try { table.deleteRow(row); } catch (_) { table.replaceData(); }
+    })
+    .catch(err => { console.error(err); alert("Failed to delete row."); });
   }
   function getCookie(name) {
     let v = null;
@@ -2972,34 +3044,41 @@ fetch("{% url 'api-allowed-ous' %}")
       <button name="start" class="btn btn-success">Start Session</button>
     </form>
   {% endif %}
-  {# -- Raw Facts -- #}
-  <h2>Raw Facts</h2>
-  <table class="table table-striped">
-    <thead>
-      <tr>
-        <th>Period</th>
-        <th>Key Figure</th>
-        <th>Value</th>
-        <th>UoM</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% if facts %}
-        {% for f in facts %}
-          <tr>
-            <td>{{ f.period.code }}</td>
-            <td>{{ f.key_figure.code }}</td>
-            <td>{{ f.value }}</td>
-            <td>{{ f.uom.code }}</td>
-          </tr>
-        {% endfor %}
-      {% else %}
+  {# -- Raw Facts (paginated) -- #}
+  <h2 class="mt-4">Raw Facts</h2>
+  <div class="table-responsive">
+    <table class="table table-striped">
+      <thead>
         <tr>
-          <td colspan="4" class="text-center text-muted">No facts recorded yet.</td>
+          <th>Period</th>
+          <th>Key Figure</th>
+          <th>Value</th>
+          <th>UoM</th>
+          <th>Service</th>
         </tr>
-      {% endif %}
-    </tbody>
-  </table>
+      </thead>
+      <tbody>
+        {% if facts %}
+          {% for f in facts %}
+            <tr>
+              <td>{{ f.period.code }}</td>
+              <td>{{ f.key_figure.code }}</td>
+              <td>{{ f.value }}</td>
+              <td>{{ f.uom.code|default:"–" }}</td>
+              <td>{{ f.service.name|default:"–" }}</td>
+            </tr>
+          {% endfor %}
+        {% else %}
+          <tr>
+            <td colspan="5" class="text-center text-muted">No facts recorded yet.</td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+  {% if is_paginated %}
+    {% include "bps/_paginator.html" with page_obj=facts_page paginator=paginator page_size=page_size page_sizes=page_sizes %}
+  {% endif %}
   {# -- Advance to Next Step (staff only) -- #}
   <form method="post" action="{% url 'bps:advance_step' sess.pk %}">
     {% csrf_token %}
@@ -3776,6 +3855,26 @@ class ManualPlanningView(TemplateView):
         }
         services = list(Service.objects.filter(is_active=True).values("code", "name"))
         org_units = list(OrgUnit.objects.values("code", "name"))
+        grouping_dims_qs = all_dims_qs.filter(group_priority__isnull=False).order_by("group_priority")
+        if not grouping_dims_qs.exists():
+            grouping_dims_qs = all_dims_qs.filter(is_row=True).order_by("order")
+        def _field_for_key(key: str) -> str:
+            if key == "orgunit":
+                return "org_unit_code"
+            if key == "service":
+                return "service_code"
+            return f"{key}_code"
+        row_field_candidates = {
+            _field_for_key(d["key"]) for d in _driver_payload(row_dims_qs)
+        }
+        if grouping_dims_qs.exists():
+            configured_fields = [_field_for_key(ld.content_type.model) for ld in grouping_dims_qs]
+            row_group_fields = [f for f in configured_fields if f in row_field_candidates]
+        else:
+            row_group_fields = []
+        row_group_start_open = bool(
+            getattr(ly, "group_start_open", getattr(ly.layout, "group_start_open", False))
+        )
         ctx.update(
             {
                 "layout_year": ly,
@@ -3791,6 +3890,8 @@ class ManualPlanningView(TemplateView):
                 "update_url": reverse("bps_api:planning_grid_update"),
                 "services_js": json.dumps(services),
                 "org_units_js": json.dumps(org_units),
+                "row_group_fields_js": json.dumps(row_group_fields),
+                "row_group_start_open_js": json.dumps(row_group_start_open),
             }
         )
         return ctx
@@ -3937,6 +4038,7 @@ class PlanningSessionDetailView(FormMixin, DetailView):
         kwargs["instance"] = self.get_object()
         return kwargs
     def get_context_data(self, **ctx):
+        ctx = super().get_context_data(**ctx)
         sess   = self.object
         step   = sess.current_step
         stage  = step.stage
@@ -3944,7 +4046,7 @@ class PlanningSessionDetailView(FormMixin, DetailView):
         layout  = ly.layout
         version = ly.version
         grouping = ly.period_groupings.filter(months_per_bucket=1).first()
-        buckets  = grouping.buckets()
+        buckets  = grouping.buckets() if grouping else []
         row_dims = (
             layout.dimensions
                   .filter(is_row=True)
@@ -3976,18 +4078,39 @@ class PlanningSessionDetailView(FormMixin, DetailView):
             lkf.key_figure.code
             for lkf in layout.key_figures.select_related("key_figure").order_by("display_order", "id")
         ]
-        from django.urls import reverse
         api_url = reverse('bps_api:planning_pivot')
-        dr    = sess.requests.order_by('-created_at').first()
-        facts = sess.planningfact_set.filter(request=dr) if dr else []
-        ctx = super().get_context_data(**ctx)
+        dr = sess.requests.order_by('-created_at').first()
+        facts_qs = (
+            PlanningFact.objects.filter(request=dr)
+            if dr else PlanningFact.objects.none()
+        )
+        facts_qs = facts_qs.select_related(
+            "period", "key_figure", "uom", "service"
+        ).order_by("period__order", "key_figure__code", "service__name")
+        try:
+            page_size = int(self.request.GET.get("page_size", 10))
+        except (TypeError, ValueError):
+            page_size = 10
+        if page_size <= 0:
+            page_size = 10
+        try:
+            page_num = int(self.request.GET.get("page", 1))
+        except (TypeError, ValueError):
+            page_num = 1
+        paginator = Paginator(facts_qs, page_size)
+        page_obj = paginator.get_page(page_num)
         ctx.update({
             "sess":         sess,
             "current_step": step,
             "stage":        stage,
             "layout":       layout,
             "dr":           dr,
-            "facts":        facts,
+            "facts":        page_obj.object_list,
+            "facts_page":   page_obj,
+            "is_paginated": page_obj.has_other_pages(),
+            "paginator":    paginator,
+            "page_size":    page_size,
+            "page_sizes":   [10, 25, 50, 100],
             "buckets":      buckets,
             "drivers":      drivers,
             "kf_codes":     kf_codes,
@@ -3999,7 +4122,10 @@ class PlanningSessionDetailView(FormMixin, DetailView):
                 {"url": reverse("bps:session_list"), "title": "Sessions"},
                 {"url": self.request.path,           "title": sess.org_unit.name},
             ],
-            "can_advance":  self.request.user.is_staff and ScenarioStep.objects.filter(scenario=sess.scenario, order__gt=step.order).exists(),
+            "can_advance":  self.request.user.is_staff and ScenarioStep.objects.filter(
+                scenario=sess.scenario,
+                order__gt=step.order
+            ).exists(),
         })
         return ctx
     def post(self, request, *args, **kwargs):
@@ -4020,31 +4146,48 @@ class PlanningSessionDetailView(FormMixin, DetailView):
                 return redirect("bps:session_detail", pk=sess.pk)
         return self.get(request, *args, **kwargs)
 class AdvanceStepView(View):
-    def post(self, request, session_id):
-        from bps.models.models_workflow import ScenarioStep
-        sess = get_object_or_404(PlanningSession, pk=session_id)
+    def post(self, request, pk):
+        sess = get_object_or_404(PlanningSession, pk=pk)
         current_order = sess.current_step.order
-        next_step = ScenarioStep.objects.filter(scenario=sess.scenario, order__gt=current_order).order_by("order").first()
+        next_step = (
+            ScenarioStep.objects
+            .filter(scenario=sess.scenario, order__gt=current_order)
+            .order_by("order")
+            .first()
+        )
         if not next_step:
             messages.warning(request, "Already at final step.")
         else:
             sess.current_step = next_step
             sess.save(update_fields=["current_step"])
             messages.success(request, f"Advanced to step: {next_step.stage.name}")
-        return redirect("bps:session_detail", pk=session_id)
+        return redirect("bps:session_detail", pk=pk)
 class AdvanceStageView(View):
-    def get(self, request, session_id):
-        sess = get_object_or_404(PlanningSession, pk=session_id)
-        next_stage = PlanningStage.objects.filter(
-            order__gt=sess.current_stage.order
-        ).order_by('order').first()
+    def get(self, request, pk):
+        sess = get_object_or_404(PlanningSession, pk=pk)
+        current_stage = sess.current_step.stage
+        next_stage = (
+            PlanningStage.objects
+            .filter(order__gt=current_stage.order)
+            .order_by('order')
+            .first()
+        )
         if not next_stage:
             messages.warning(request, "Already at final stage.")
+            return redirect('bps:session_detail', pk=pk)
+        next_step = (
+            ScenarioStep.objects
+            .filter(scenario=sess.scenario, stage=next_stage)
+            .order_by('order')
+            .first()
+        )
+        if not next_step:
+            messages.warning(request, f"No step defined for stage: {next_stage.name}")
         else:
-            sess.current_stage = next_stage
-            sess.save(update_fields=['current_stage'])
+            sess.current_step = next_step
+            sess.save(update_fields=['current_step'])
             messages.success(request, f"Moved to stage: {next_stage.name}")
-        return redirect('bps:session_detail', pk=session_id)
+        return redirect('bps:session_detail', pk=pk)
 class ConstantListView(FormMixin, ListView):
     model = Constant
     template_name = 'bps/constant_list.html'

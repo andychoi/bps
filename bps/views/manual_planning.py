@@ -95,10 +95,12 @@ class ManualPlanningView(TemplateView):
         services = list(Service.objects.filter(is_active=True).values("code", "name"))
         org_units = list(OrgUnit.objects.values("code", "name"))
 
-        # ---- Row grouping fields (if any) ----
-        grouping_dims_qs = all_dims_qs.filter(group_priority__isnull=False).order_by("group_priority")
-        if not grouping_dims_qs.exists():
-            grouping_dims_qs = all_dims_qs.filter(is_row=True).order_by("order")
+        # only group when row dims have a group_priority
+        grouping_dims_qs = (
+            all_dims_qs
+            .filter(is_row=True, group_priority__isnull=False)
+            .order_by("group_priority")
+        )
 
         def _field_for_key(key: str) -> str:
             if key == "orgunit":
@@ -106,18 +108,14 @@ class ManualPlanningView(TemplateView):
             if key == "service":
                 return "service_code"
             return f"{key}_code"
-        
-        # Only allow grouping by fields that actually exist as ROW dimensions,
-        # otherwise everything will be "(blank)".
+
         row_field_candidates = {
             _field_for_key(d["key"]) for d in _driver_payload(row_dims_qs)
         }
 
-        if grouping_dims_qs.exists():
-            configured_fields = [_field_for_key(ld.content_type.model) for ld in grouping_dims_qs]
-            row_group_fields = [f for f in configured_fields if f in row_field_candidates]
-        else:
-            row_group_fields = []  # <— NO GROUPING by default
+        configured_fields = [_field_for_key(ld.content_type.model) for ld in grouping_dims_qs]
+        row_group_fields = [f for f in configured_fields if f in row_field_candidates]
+        # NOTE: if no priorities are set, row_group_fields will be [], so the JS won’t enable grouping.
 
         # Read "start open" off layout_year first, then layout, else default False
         row_group_start_open = bool(

@@ -7,7 +7,7 @@ from .api import (
 )
 from .views_manual import ManualPlanningGridAPIView
 from ..views.viewsets import PlanningFactViewSet, OrgUnitViewSet
-from .views import PlanningFactPivotedAPIView
+from .views import PlanningFactPivotedAPIView, SessionFactsPageAPIView
 from .views_lookup import header_options
 
 app_name = "bps_api"
@@ -48,5 +48,6 @@ urlpatterns = [
     ),
 
     path("api/layout/<int:layout_year_id>/header-options/<str:model_name>/", header_options, name="header-options"),
+    path("sessions/<int:pk>/facts/", SessionFactsPageAPIView.as_view(), name="session-facts"),
 
 ]

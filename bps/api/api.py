@@ -62,28 +62,40 @@ class BulkUpdateSerializer(serializers.Serializer):
         child=serializers.DictField(child=serializers.JSONField(allow_null=True))
     )
 
-class PlanningGridView(APIView):
-    # permission_classes = [IsAuthenticated]
 
+class PlanningGridView(APIView):
     def get(self, request):
-        # accept layout_year (preferred) or old layout param for backward compat
         ly_pk = request.query_params.get("layout_year") or request.query_params.get("layout")
         ly = get_object_or_404(PlanningLayoutYear, pk=ly_pk)
 
-        # OLD: row_dims = list(ly.layout_dimensions.filter(is_row=True))
+        # Row dimensions
         row_dims = list(
             ly.layout.dimensions.filter(is_row=True).select_related("content_type")
         )
-        dim_keys   = [ld.content_type.model for ld in row_dims]
+        dim_keys   = [ld.content_type.model for ld in row_dims]  # e.g. ["orgunit","service","position","skill"]
         dim_models = {ld.content_type.model: ld.content_type.model_class() for ld in row_dims}
-        
+
+        # Extra-dimensions are everything except orgunit/service (which are FK fields on the fact)
+        extra_dim_keys = [k for k in dim_keys if k not in ("orgunit", "service")]
+
+        # Base queryset
         qs = (
             PlanningFact.objects
             .filter(session__scenario__layout_year=ly)
             .select_related("org_unit", "service", "period", "key_figure")
         )
 
-        # header filters accept PK or code
+        # Header filters for orgunit/service (code or pk, plus NULL for service)
+        def parse_pk_or_code(val):
+            if val is None or val == "":
+                return None, None
+            s = str(val).strip()
+            if s.lower() in {"null", "(null)"}:
+                return "NULL", None
+            if s.isdigit():
+                return "PK", int(s)
+            return "CODE", s
+
         org_sel = request.query_params.get("header_orgunit")
         if org_sel:
             kind, v = parse_pk_or_code(org_sel)
@@ -102,14 +114,12 @@ class PlanningGridView(APIView):
             elif kind == "NULL":
                 qs = qs.filter(service__isnull=True)
 
-        # other header dims (only those that are also row dims)
+        # Other header filters -> look in extra_dimensions_json (support int or str)
         for param, val in request.query_params.items():
             if not param.startswith("header_"):
                 continue
             key = param[len("header_"):]
-            if key in {"orgunit", "service"}:
-                continue
-            if key not in dim_keys:
+            if key in {"orgunit", "service"} or key not in extra_dim_keys:
                 continue
             if val is None or val == "":
                 continue
@@ -117,34 +127,83 @@ class PlanningGridView(APIView):
                 v_int = int(val)
             except (TypeError, ValueError):
                 continue
-            qs = qs.filter(extra_dimensions_json__contains={key: v_int})
+            qs = qs.filter(
+                Q(extra_dimensions_json__contains={key: v_int}) |
+                Q(extra_dimensions_json__contains={key: str(v_int)})
+            )
+
+        # Build lookup maps for extra dims (pk->label and code->pk if model has 'code')
+        pk_to_label = {}
+        code_to_pk  = {}
+        for key in extra_dim_keys:
+            Model = dim_models[key]
+            if hasattr(Model, "code"):
+                items = Model.objects.all().values("id", "code", "name")
+                code_to_pk[key]  = {str(it["code"]): it["id"] for it in items}
+                pk_to_label[key] = {it["id"]: (it["name"] or str(it["code"])) for it in items}
+            else:
+                items = Model.objects.all().values("id", "name")
+                code_to_pk[key]  = {}  # no codes
+                pk_to_label[key] = {it["id"]: (it["name"] or str(it["id"])) for it in items}
+
+        def resolve_extra_pk_and_label(key: str, raw):
+            """
+            Accepts pk(int/str digits) or 'code' (str). Returns (pk:int|None, label:str|None).
+            """
+            if raw is None or raw == "":
+                return None, None
+            if isinstance(raw, int) or (isinstance(raw, str) and raw.isdigit()):
+                pk = int(raw)
+                return pk, pk_to_label.get(key, {}).get(pk)
+            # try code->pk
+            pk = code_to_pk.get(key, {}).get(str(raw))
+            if pk:
+                return pk, pk_to_label.get(key, {}).get(pk)
+            return None, None
 
         rows = {}
         for fact in qs:
             org_code = fact.org_unit.code
             svc_code = fact.service.code if fact.service else ""
             ed = fact.extra_dimensions_json or {}
-            dim_codes = [ed.get(k) for k in dim_keys]
-            key = (org_code, svc_code, *dim_codes)
 
-            if key not in rows:
+            # Case-insensitive access to extra-dim keys
+            ed_lc = {str(k).lower(): v for k, v in ed.items()}
+
+            # Normalize extra-dim PKs + labels
+            dim_pks = []
+            dim_pk_by_key = {}
+            dim_lbl_by_key = {}
+            for key in extra_dim_keys:
+                raw = ed.get(key)
+                if raw is None:
+                    raw = ed_lc.get(key.lower())
+                pk, lbl = resolve_extra_pk_and_label(key, raw)
+                dim_pks.append(pk)
+                dim_pk_by_key[key]  = pk
+                dim_lbl_by_key[key] = lbl
+
+            # Key for de-duping rows: org code, service code, then extra-dim PKs
+            key_tuple = (org_code, svc_code, *dim_pks)
+            if key_tuple not in rows:
                 base = {
                     "org_unit":      fact.org_unit.name,
-                    "org_unit_code": org_code,
+                    "org_unit_code": org_code,                       # string code
                     "service":       fact.service.name if fact.service else None,
-                    "service_code":  svc_code or None,
+                    "service_code":  svc_code or None,               # string code or None
                 }
-                for dk in dim_keys:
-                    code = ed.get(dk)
-                    inst = dim_models[dk].objects.filter(pk=code).first() if code else None
-                    base[dk] = str(inst) if inst else None
-                    base[f"{dk}_code"] = code
-                rows[key] = base
+                # attach extra-dim fields (pk in *_code; label in plain field)
+                for k in extra_dim_keys:
+                    base[k] = dim_lbl_by_key[k]
+                    base[f"{k}_code"] = dim_pk_by_key[k]
+                rows[key_tuple] = base
 
             col = f"{fact.period.code}_{fact.key_figure.code}"
-            rows[key][col] = float(fact.value)
+            rows[key_tuple][col] = float(fact.value)
 
+        # Tabulator expects an array for this grid
         return Response(list(rows.values()))
+    
 
 class PlanningGridBulkUpdateView(APIView):
     permission_classes = [IsAuthenticated]

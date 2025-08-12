@@ -30,59 +30,80 @@
     </a>
   </div>
 
-  {# -- Only show “Start Session” if it hasn’t been started yet -- #}
-  {% if can_edit %}
-    <form method="post" class="mb-4">
-      {% csrf_token %}
-      {{ form|crispy }}
-      <button name="start" class="btn btn-success">Start Session</button>
-    </form>
-  {% endif %}
-
-  {# -- Raw Facts (paginated) -- #}
-  <h2 class="mt-4">Raw Facts</h2>
-
-  <div class="table-responsive">
-    <table class="table table-striped">
-      <thead>
-        <tr>
-          <th>Period</th>
-          <th>Key Figure</th>
-          <th>Value</th>
-          <th>UoM</th>
-          <th>Service</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% if facts %}
-          {% for f in facts %}
-            <tr>
-              <td>{{ f.period.code }}</td>
-              <td>{{ f.key_figure.code }}</td>
-              <td>{{ f.value }}</td>
-              <td>{{ f.uom.code|default:"–" }}</td>
-              <td>{{ f.service.name|default:"–" }}</td>
-            </tr>
-          {% endfor %}
-        {% else %}
-          <tr>
-            <td colspan="5" class="text-center text-muted">No facts recorded yet.</td>
-          </tr>
-        {% endif %}
-      </tbody>
-    </table>
-  </div>
-
-  {% if is_paginated %}
-    {% include "bps/_paginator.html" with page_obj=facts_page paginator=paginator page_size=page_size page_sizes=page_sizes %}
-  {% endif %}
-
-  {# -- Advance to Next Step (staff only) -- #}
-  <form method="post" action="{% url 'bps:advance_step' sess.pk %}">
+<div class="d-flex align-items-end gap-2 flex-wrap mb-4">
+  {# -- if it hasn’t been started yet basically an assignment + start timestamp (implicit via created_at), not a status transition.-- #}
+  <form method="post" class="d-flex align-items-end gap-2 flex-wrap">
     {% csrf_token %}
-    <button class="btn btn-primary"
-            {% if not can_advance %}disabled{% endif %}>
-      Next Step →
+    {% if can_edit %}
+      {{ form|crispy }}
+      <button type="submit" name="start" class="btn btn-success">
+        Assign to me & begin
+      </button>
+    {% endif %}
+
+    <button
+      type="submit"
+      formaction="{% url 'bps:advance_step' sess.pk %}"
+      class="btn btn-primary"
+      {% if not can_advance %}disabled{% endif %}
+    >
+      Advance to next workflow step →
     </button>
   </form>
+</div>
+
+
+<div class="card mt-4">
+  <div class="card-header">Raw Facts</div>
+  <div class="card-body">
+    <div id="raw-facts-table"></div>
+  </div>
+</div>
+
+<div id="raw-facts-table"></div>
+<link href="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3.1/dist/css/tabulator.min.css" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/tabulator-tables@6.3.1/dist/js/tabulator.min.js"></script>
+<script>
+(function(){
+  const factsURL = "{% url 'bps_api:session-facts' sess.pk %}";
+
+  new Tabulator("#raw-facts-table", {
+    layout: "fitDataStretch",
+    ajaxURL: factsURL,
+    ajaxConfig: { credentials: "include" },
+
+    // ✅ Tabulator 6.3 pagination config
+    pagination: true,
+    paginationMode: "remote",
+    paginationSize: 10,
+    paginationSizeSelector: [10, 25, 50, 100],
+    paginationCounter: "rows",
+
+    // (optional) map param names if you need different ones:
+    // dataSendParams: { page: "page", size: "size" },
+
+    // (optional) map receive names if you rename "last_page" / "data"
+    // dataReceiveParams: { last_page: "last_page", data: "data" },
+
+    columns: [
+      { title:"#", formatter:"rownum", width:60 },
+      { title:"Org Unit", field:"org_unit" },
+      { title:"Service",  field:"service" },
+      { title:"Account",  field:"account" },
+      { title:"Period",   field:"period", width:90 },
+      { title:"Key Figure", field:"key_figure", width:140 },
+      { title:"Value",    field:"value", hozAlign:"right" },
+      { title:"UoM",      field:"uom", width:90 },
+      { title:"Ref Value", field:"ref_value", hozAlign:"right" },
+      { title:"Ref UoM",   field:"ref_uom", width:100 },
+      { title:"Extra Dims", field:"extra_dimensions", formatter:function(cell){
+          const v = cell.getValue() || {};
+          try { return Object.keys(v).length ? JSON.stringify(v) : ""; } catch(e){ return ""; }
+        }
+      },
+    ],
+  });
+})();
+</script>
+
 {% endblock %}

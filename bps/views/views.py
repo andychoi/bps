@@ -12,6 +12,7 @@ from django.views.generic import (
     TemplateView, ListView, DetailView,
     FormView, RedirectView
 )
+from django.contrib.contenttypes.models import ContentType
 
 from django.views.generic.edit import FormMixin
 from django.forms import modelform_factory
@@ -249,7 +250,8 @@ class PlanningSessionDetailView(FormMixin, DetailView):
             if dr else PlanningFact.objects.none()
         )
         facts_qs = facts_qs.select_related(
-            "period", "key_figure", "uom", "service"
+            "org_unit", "service", "account",
+            "period", "key_figure", "uom", "ref_uom"
         ).order_by("period__order", "key_figure__code", "service__name")
 
         # paging params
@@ -267,20 +269,111 @@ class PlanningSessionDetailView(FormMixin, DetailView):
         paginator = Paginator(facts_qs, page_size)
         page_obj = paginator.get_page(page_num)
 
+        # ---------- NEW: enrich current page with all dimensions ----------
+        # Current page items (already select_related)
+        page_facts = list(page_obj.object_list)
+
+        # Discover which extra-dimension keys appear on this page
+        extra_keys = set()
+        for f in page_facts:
+            extra_keys.update((f.extra_dimensions_json or {}).keys())
+
+        # Build header labels and resolve target models
+        extra_headers = []
+        extra_models = {}
+        for key in sorted(extra_keys):
+            try:
+                ct = ContentType.objects.get(model=key)
+                Model = ct.model_class()
+                label = getattr(Model._meta, "verbose_name", key).title()
+                extra_models[key] = Model
+            except ContentType.DoesNotExist:
+                label = key.replace("_", " ").title()
+                extra_models[key] = None
+            extra_headers.append({"key": key, "label": label})
+
+        # Build lookup maps for both PK and (if present) 'code' values
+        extra_maps = {}
+        for key, Model in extra_models.items():
+            values = {
+                (f.extra_dimensions_json or {}).get(key)
+                for f in page_facts
+                if (f.extra_dimensions_json or {}).get(key) is not None
+            }
+            if not Model or not values:
+                extra_maps[key] = {}
+                continue
+
+            pk_vals   = [v for v in values if isinstance(v, int)]
+            code_vals = [v for v in values if isinstance(v, str)]
+
+            mapping = {}
+            if pk_vals:
+                for obj in Model.objects.filter(pk__in=pk_vals):
+                    mapping[obj.pk] = str(obj)
+            if code_vals and hasattr(Model, "code"):
+                for obj in Model.objects.filter(code__in=code_vals):
+                    mapping[getattr(obj, "code")] = str(obj)
+
+            extra_maps[key] = mapping
+
+        # Build rows for the template, aligned to extra_headers
+        facts_rows = []
+        for f in page_facts:
+            ed = f.extra_dimensions_json or {}
+
+            # Prefer a useful identifier for account: code or name
+            acct = f.account
+            acct_disp = None
+            if acct is not None:
+                acct_disp = getattr(acct, "code", None) or getattr(acct, "name", None) or str(acct)
+
+            row = {
+                "org_unit":  f.org_unit.name,
+                "service":   f.service.name if f.service else None,
+                "account":   acct_disp,
+                "period":    f.period.code,
+                "key_figure": f.key_figure.code,
+                "value":     f.value,
+                "uom":       f.uom.code if f.uom else None,
+                "ref_value": f.ref_value,
+                "ref_uom":   f.ref_uom.code if f.ref_uom else None,
+                "extra_vals": [],
+            }
+
+            for hdr in extra_headers:
+                key = hdr["key"]
+                raw = ed.get(key)
+                if raw is None:
+                    row["extra_vals"].append(None)
+                else:
+                    disp = extra_maps.get(key, {}).get(raw, raw)
+                    row["extra_vals"].append(disp)
+
+            facts_rows.append(row)
+        # -----------------------------------------------------------------
+
         ctx.update({
             "sess":         sess,
             "current_step": step,
             "stage":        stage,
             "layout":       layout,
             "dr":           dr,
+
             # Keep original 'facts' for backwards compatibility (current page items)
             "facts":        page_obj.object_list,
-            # New paginated objects
+
+            # New enriched rows + dynamic headers for extra dimensions
+            "extra_headers": extra_headers,   # [{key, label}, ...]
+            "facts_rows":    facts_rows,      # list of dicts aligned with extra_headers
+
+            # Pagination objects
             "facts_page":   page_obj,
             "is_paginated": page_obj.has_other_pages(),
             "paginator":    paginator,
             "page_size":    page_size,
             "page_sizes":   [10, 25, 50, 100],  
+
             "buckets":      buckets,
             "drivers":      drivers,
             "kf_codes":     kf_codes,
@@ -321,7 +414,6 @@ class PlanningSessionDetailView(FormMixin, DetailView):
                 return redirect("bps:session_detail", pk=sess.pk)
 
         return self.get(request, *args, **kwargs)
-
 
 class AdvanceStepView(View):
     """

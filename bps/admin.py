@@ -223,7 +223,7 @@ class LayoutYearInline(admin.TabularInline):
 class PlanningLayoutDimensionInlineForm(forms.ModelForm):
     class Meta:
         model = PlanningLayoutDimension
-        fields = ("content_type", "is_row", "is_column", "is_header", "order")
+        fields = ("content_type", "is_row", "is_column", "is_header", "order", "group_priority")
     def clean(self):
         cleaned = super().clean()
         flags = [cleaned.get("is_row"), cleaned.get("is_column"), cleaned.get("is_header")]
@@ -235,7 +235,7 @@ class PlanningLayoutDimensionInline(admin.TabularInline):
     model = PlanningLayoutDimension
     form  = PlanningLayoutDimensionInlineForm
     extra = 0
-    fields = ("content_type", "is_row", "is_column", "is_header", "order")
+    fields = ("content_type", "is_row", "is_column", "is_header", "order", "group_priority")
     ordering = ("order",)
 
 # Per-year overrides inline under LayoutYear
@@ -252,7 +252,7 @@ class PlanningLayoutAdmin(admin.ModelAdmin):
     inlines = [PlanningLayoutDimensionInline, PlanningKeyFigureInline, LayoutYearInline]
     
 # Show template-level dimensions inline on the layout page too
-PlanningLayoutAdmin.inlines.insert(0, PlanningLayoutDimensionInline)
+# PlanningLayoutAdmin.inlines.insert(0, PlanningLayoutDimensionInline)
 
 
 class PeriodGroupingInline(admin.TabularInline):
