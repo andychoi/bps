@@ -6,6 +6,17 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
 {% endblock %}
 
 {% block content %}
+<style>
+  /* soft-delete visual */
+  .row-deleted {
+    opacity: 0.6;
+    background: #ffe7e7 !important;
+  }
+  .row-deleted .tabulator-cell {
+    text-decoration: line-through;
+  }
+</style>
+
 <div class="container-fluid mt-3">
   <div class="d-flex justify-content-between align-items-center mb-3">
     <h2>
@@ -15,7 +26,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     <div>
       <button class="btn btn-primary me-2" id="btn-save">Save Changes</button>
       <a class="btn btn-outline-secondary" href="{% url 'admin:bps_planninglayout_change' layout_year.layout.pk %}">Edit Layout</a>
-      <button id="btn-xlsx">Export Excel</button>
+      <button id="btn-xlsx" class="btn btn-outline-secondary">Export Excel</button>
     </div>
   </div>
 
@@ -60,8 +71,9 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
 <script>
 (function(){
   // ---- Context from server ----
-  const apiURL         = "{{ api_url }}";          // /api/bps/grid/
-  const updateURL      = "{{ update_url }}";       // /api/bps/grid-update/
+  const CSRF_TOKEN = "{{ csrf_token }}";
+  const apiURL         = "{{ api_url }}";
+  const updateURL      = "{{ update_url }}";
   const layoutId       = {{ layout_year.pk }};
   const buckets        = {{ buckets_js|safe }};
   const kfCodes        = {{ kf_codes|safe }};
@@ -71,7 +83,6 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
   const headerDefaults = {{ header_defaults_js|safe }};
   const services       = {{ services_js|safe }};
   const orgUnits       = {{ org_units_js|safe }};
-  // Grouping config (may be [])
   const rowGroupFields = {{ row_group_fields_js|safe }} || [];
   const rowGroupStartOpen = {{ row_group_start_open_js|safe }};
 
@@ -192,7 +203,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       }))
   );
 
-  // ---- Columns (values) — KEY FIGURE column groups ----
+  // ---- Columns (values) — KEY FIGURES grouped by bucket ----
   const valueColsGrouped = kfCodes.map(kf => ({
     title: kf,
     columns: buckets.map(b => ({
@@ -245,7 +256,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     const key = String(raw);
     if (field === "org_unit_code") return orgUnitMap[key] || key;
     if (field === "service_code")  return serviceMap[key]  || key;
-    const dimKey = field.endsWith("_code") ? field.slice(0, -5) : field; // remove _code
+    const dimKey = field.endsWith("_code") ? field.slice(0, -5) : field;
     const map = driverMaps[dimKey] || {};
     return map[key] || key;
   }
@@ -256,7 +267,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     ajaxURL: apiURL,
     ajaxConfig: { credentials: "include" },
     ajaxParams: buildAjaxParams(),
-    ajaxResponse: (_url, _params, res) => res,  // API returns array of rows
+    ajaxResponse: (_url, _params, res) => res,
     columns: [
       {
         title: "",
@@ -265,20 +276,29 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
         headerSort: false,
         hozAlign: "center",
         frozen: true,
-        formatter: () => "🗑️",
-        cellClick: (_e, cell) => deleteRow(cell.getRow()),
-        tooltip: "Delete row (blank all values in this slice)",
+        formatter: (_cell, _params, _onRendered) => "🗑️",
+        cellClick: (_e, cell) => toggleDeleteRow(cell.getRow()),
+        tooltip: (comp) => {
+          // Only CellComponents have getRow()
+          const row = (comp && typeof comp.getRow === "function") ? comp.getRow() : null;
+          const data = row ? row.getData() : null;
+          if (data && data.__marked_delete) return "Undo delete";
+          return "Mark row for delete";
+        },
       },
       ...dimCols,
-      ...valueColsGrouped,  // grouped value columns by Key Figure
+      ...valueColsGrouped,
     ],
     pagination: "local",
     paginationSize: 50,
     history: true,
     validationMode: "highlight",
+    rowFormatter: function(row){
+      const d = row.getData();
+      row.getElement().classList.toggle("row-deleted", !!d.__marked_delete);
+    },
   };
 
-  // Enable grouping only if configured
   const rowGroupingOn = Array.isArray(rowGroupFields) && rowGroupFields.length > 0;
   if (rowGroupingOn) {
     tableOptions.groupBy = rowGroupFields.length === 1 ? rowGroupFields[0] : rowGroupFields;
@@ -323,18 +343,34 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
   document.getElementById("add-row-btn").addEventListener("click", async () => {
     try {
       const row = await table.addRow({ ...blankRow }, true);
-      const firstDim = dimCols[0];
+      const firstDim = table.getColumnDefinitions().find(c => dimFieldNames.includes(c.field));
       if (firstDim) row.getCell(firstDim.field).edit();
     } catch (e) { console.error(e); }
   });
 
+  // ---- Soft delete toggle ----
+  function toggleDeleteRow(row) {
+    const d = row.getData();
+    d.__marked_delete = !d.__marked_delete;
+    // If marking for delete, we should also clear any pending cell edits to avoid re-creating later
+    if (d.__marked_delete) {
+      row.getCells().forEach(c => {
+        try { c.cancelEdit && c.getElement().classList.contains("tabulator-editing") && c.cancelEdit(); } catch {}
+      });
+    }
+    row.update(d);
+    row.getElement().classList.toggle("row-deleted", d.__marked_delete);
+  }
+
   // ---- Utility: send updates (PATCH → fallback POST) ----
   async function sendGridUpdates(payload){
-    // Prefer PATCH (view accepts PATCH/POST), fallback to POST for envs that block PATCH.
     let res = await fetch(updateURL, {
       method: "PATCH",
       credentials: "include",
-      headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },
+      headers: { 
+        "Content-Type": "application/json", 
+        "X-CSRFToken": getCookie("csrftoken") 
+    },
       body: JSON.stringify(payload),
     });
     if (res.status === 404 || res.status === 405){
@@ -348,7 +384,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     return res;
   }
 
-  // ---- Save logic (numeric changes + dimension "move") ----
+  // ---- Save logic (numeric changes + dimension "move" + soft deletes) ----
   const VALUE_FIELDS = buckets.flatMap(b => kfCodes.map(kf => `${b.code}_${kf}`));
 
   function dimsFromRowData(d, headerSelected){
@@ -365,7 +401,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     rowDrivers
       .filter(dr => dr.key !== "orgunit" && dr.key !== "service")
       .forEach(dr => { base[dr.key] = d[`${dr.key}_code`] ?? null; });
-    // header dims (non-row)
+    // header-only dims
     headerDrivers
       .filter(hd => hd.key !== "orgunit" && hd.key !== "service")
       .forEach(hd => { base[hd.key] = headerSelected[hd.key] ?? null; });
@@ -374,18 +410,63 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
 
   document.getElementById("btn-save").addEventListener("click", () => {
     const editedCells = table.getEditedCells();
-
-    // separate numeric and dimension edits
-    const valueCells = editedCells.filter(c => VALUE_FIELDS.includes(c.getField()));
-    const dimCells   = editedCells.filter(c => dimFieldNames.includes(c.getField()));
-
     const headerSelected = readHeaderSelections();
     const updates = [];
     const missingOrgRows = new Set();
 
+    // rows marked for deletion (virtual → physical on save)
+    const rowsMarkedForDelete = table.getRows().filter(r => !!r.getData().__marked_delete);
+    const deletedRowIds = new Set(rowsMarkedForDelete.map(r => r.getIndex()));
+
+    // 0) Push delete_row updates first
+    for (const row of rowsMarkedForDelete) {
+      const d = row.getData();
+      const base = dimsFromRowData(d, headerSelected);
+      if (!base.org_unit) {
+        missingOrgRows.add(row.getPosition(true));
+        continue;
+      }
+
+      let pushed = 0;
+      for (const field of VALUE_FIELDS) {
+        const val = d[field];
+        if (val != null && val !== "") {
+          const sep = field.indexOf("_");
+          const bucketCode = field.slice(0, sep);
+          const kf = field.slice(sep + 1);
+          const period = bucketFirstPeriodMap[bucketCode] || bucketCode;
+
+          updates.push({
+            ...base,
+            period,
+            key_figure: kf,
+            delete_row: true,
+          });
+          pushed++;
+        }
+      }
+
+      // Fallback: if no non-empty value cells found, send a single row-level delete
+      if (pushed === 0) {
+        updates.push({
+          ...base,
+          delete_row: true, // no period/key_figure => API deletes all facts matching the dims
+        });
+      }
+    }
+
+    // separate numeric and dimension edits, excluding deleted rows
+    const valueCells = editedCells
+      .filter(c => VALUE_FIELDS.includes(c.getField()))
+      .filter(c => !deletedRowIds.has(c.getRow().getIndex()));
+    const dimCells   = editedCells
+      .filter(c => dimFieldNames.includes(c.getField()))
+      .filter(c => !deletedRowIds.has(c.getRow().getIndex()));
+
     // 1) Handle rows where *any* dimension changed: move all existing numeric values
     const rowsWithDimChange = Array.from(new Set(dimCells.map(c => c.getRow())));
     for (const row of rowsWithDimChange){
+      if (deletedRowIds.has(row.getIndex())) continue; // already deleting
       const dNow = row.getData();
 
       // reconstruct "old" dimensions by taking current data but replacing edited fields with their oldValue
@@ -397,13 +478,11 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       const newDims = dimsFromRowData(dNow, headerSelected);
       const oldDims = dimsFromRowData(oldD, headerSelected);
 
-      // org unit must be present (new and old)
       if (!newDims.org_unit || !oldDims.org_unit){
         missingOrgRows.add(row.getPosition(true));
         continue;
       }
 
-      // for every numeric column that currently has a value, create (new) and delete (old)
       for (const field of VALUE_FIELDS){
         const sep = field.indexOf("_");
         const bucketCode = field.slice(0, sep);
@@ -419,7 +498,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       }
     }
 
-    // 2) Handle plain numeric cell edits (skip rows that had dimension moves above)
+    // 2) Handle plain numeric cell edits (skip rows that had dimension moves or are deleted)
     const skipRows = new Set(rowsWithDimChange.map(r => r.getIndex()));
     for (const cell of valueCells){
       const row = cell.getRow();
@@ -450,7 +529,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     }
 
     sendGridUpdates({
-      layout_year: layoutId,               // the API also accepts "layout_year"
+      layout_year: layoutId,
       headers: headerSelected,
       delete_zeros: true,
       delete_blanks: true,
@@ -458,10 +537,6 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     })
     .then(async (res) => {
       const data = await res.json().catch(() => ({}));
-      if (res.status === 404 && data && data.detail && /PlanningLayoutYear/i.test(String(data.detail))) {
-        alert("Save failed: bad layout id in request. Please refresh the page.");
-        return;
-      }
       if (res.status === 207 || (Array.isArray(data.errors) && data.errors.length)) {
         const msg = [
           "Some updates failed:",
@@ -469,51 +544,19 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
           (data.errors || []).length > 10 ? `…and ${data.errors.length - 10} more` : ""
         ].join("\n");
         alert(msg);
-        table.replaceData(apiURL, buildAjaxParams());
-        return;
+      } else if (!res.ok) {
+        throw new Error(data.detail || "Save failed");
+      } else {
+        alert(`All changes saved. Updated ${data.updated ?? 0}, deleted ${data.deleted ?? 0}.`);
       }
-      if (!res.ok) throw new Error(data.detail || "Save failed");
-      alert(`All changes saved. Updated ${data.updated ?? "some"} cells.`);
-      table.setData(apiURL, buildAjaxParams());
+      // Always reload from server so the grid reflects the DB after save
+      table.replaceData(apiURL, buildAjaxParams()).then(() => {
+        // clear all soft-delete marks post-refresh
+      });
     })
     .catch((err) => { console.error(err); alert("Save failed."); });
   });
 
-  // ---- Delete entire row slice (all months/KFs) ----
-  function deleteRow(row) {
-    const d = row.getData();
-    const headerSelected = readHeaderSelections();
-    const base = dimsFromRowData(d, headerSelected);
-    if (!base.org_unit) { alert("Org Unit is required (from header or row) to delete this slice."); return; }
-
-    const updates = [];
-    for (const field of VALUE_FIELDS) {
-      const sep = field.indexOf("_");
-      const bucketCode = field.slice(0, sep);
-      const kf = field.slice(sep + 1);
-      const period = bucketFirstPeriodMap[bucketCode] || bucketCode;
-      updates.push({ ...base, period, key_figure: kf, value: "" });
-    }
-    if (!updates.length) return;
-    if (!confirm("Delete this entire row (all months/key figures) from this header slice?")) return;
-
-    sendGridUpdates({
-      layout: layoutId,
-      headers: headerSelected,
-      delete_zeros: true,
-      delete_blanks: true,
-      updates,
-    })
-    .then(async (res) => {
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        const msg = (data && (data.detail || (data.errors && JSON.stringify(data.errors)))) || res.statusText;
-        throw new Error(msg);
-      }
-      try { table.deleteRow(row); } catch (_) { table.replaceData(apiURL, buildAjaxParams()); }
-    })
-    .catch(err => { console.error(err); alert("Failed to delete row."); });
-  }
 })();
 </script>
 {% endblock %}

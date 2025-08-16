@@ -1,82 +1,148 @@
+# BPS Models Documentation
 
-# Columnar model
+## Overview
 
- views and templates will align cleanly with:
-	•	PlanningScenario → M2M → ScenarioStep
-	•	ScenarioStep → PlanningStage + PlanningLayout
-	•	PlanningSession → FK → ScenarioStep
-    
-## Migration 
+The BPS models are organized into domain-specific modules for better maintainability and separation of concerns.
 
+## Model Structure
+
+### Core Models (`models.py`)
+- **PlanningFact**: Central fact table with EAV pattern using JSONB
+- **DataRequest**: Audit trail for all planning operations
+- **KeyFigure**: Configurable metrics (FTE, COST, etc.)
+- **UnitOfMeasure**: Units with conversion support
+- **ConversionRate**: Exchange rates between units
+- **UserMaster**: Links users to organizational structure
+
+### Dimension Models (`models_dimension.py`)
+- **OrgUnit**: Hierarchical organizational units
+- **Service**: Business services/systems
+- **Account**: Chart of accounts
+- **CBU**: Customer Business Units
+- **CostCenter**: Cost center hierarchy
+- **InternalOrder**: Internal order tracking
+
+### Layout Models (`models_layout.py`)
+- **PlanningLayout**: Layout templates
+- **PlanningLayoutYear**: Year-specific layout configurations
+- **PlanningLayoutDimension**: Dimension configuration per layout
+- **LayoutDimensionOverride**: Year-specific dimension overrides
+
+### Period Models (`models_period.py`)
+- **Year**: Planning years
+- **Period**: Monthly periods (01-12)
+- **PeriodGrouping**: Flexible period groupings (monthly, quarterly)
+
+### Workflow Models (`models_workflow.py`)
+- **Version**: Planning versions (ACTUAL, DRAFT, PLAN)
+- **PlanningScenario**: Multi-step planning scenarios
+- **ScenarioStep**: Individual workflow steps
+- **PlanningSession**: Session per OrgUnit within scenario
+
+### Function Models (`models_function.py`)
+- **Formula**: Planning formulas with conditional logic
+- **SubFormula**: Reusable formula components
+- **Constant**: Named constants for formulas
+- **PlanningFunction**: Copy, distribute, convert operations
+- **ReferenceData**: Reference data for formulas
+
+### View Models (`models_view.py`)
+- **PivotedPlanningFact**: Materialized view for reporting
+- **PlanningFactPivotRow**: Pivoted fact representation
+
+## Key Design Patterns
+
+### EAV (Entity-Attribute-Value) Pattern
+The `PlanningFact` model uses JSONB `extra_dimensions_json` field to store flexible dimension combinations without schema changes.
+
+### ContentTypes Integration
+Dimensions are linked via Django's ContentTypes framework, enabling pluggable dimension models.
+
+### Hierarchical Data
+- **OrgUnit**: Parent-child relationships for organizational hierarchy
+- **Account**: Chart of accounts hierarchy
+- **CostCenter**: Cost center hierarchy
+
+### Audit Trail
+All changes tracked through:
+- **DataRequest**: Groups related changes
+- **DataRequestLog**: Individual fact changes
+- **FormulaRun**: Formula execution audit
+
+## Database Views
+
+### Pivoted Planning Fact View
+```sql
+CREATE OR REPLACE VIEW pivoted_planningfact AS
+SELECT
+    pf.version_id AS version,
+    pf.year_id AS year,
+    pf.org_unit_id AS org_unit,
+    pf.service_id AS service,
+    pf.account_id AS account,
+    pf.key_figure_id AS key_figure,
+    -- Monthly columns (01-12)
+    MAX(CASE WHEN per.code = '01' THEN pf.value END) AS m01,
+    MAX(CASE WHEN per.code = '02' THEN pf.value END) AS m02,
+    -- ... (continues for all 12 months)
+    SUM(pf.value) AS total_value
+FROM bps_planningfact AS pf
+JOIN bps_period AS per ON pf.period_id = per.id
+GROUP BY pf.version_id, pf.year_id, pf.org_unit_id, 
+         pf.service_id, pf.account_id, pf.key_figure_id;
 ```
+
+## Migration Notes
+
+### Creating Empty Migrations
+```bash
 python manage.py makemigrations --empty bps
 ```
 
+### Custom Migrations
+- Database views creation
+- Index optimization
+- Data migration scripts
 
-```
-# bps/migrations/0002_create_pivoted_planningfact_view.py
-from django.db import migrations
+## Performance Considerations
 
-class Migration(migrations.Migration):
+### Indexes
+- GIN indexes on JSONB fields
+- Composite indexes on frequently queried combinations
+- Hierarchical path indexes for tree structures
 
-    dependencies = [
-        ('bps', '0001_initial'),
-    ]
+### Query Optimization
+- Use `select_related()` for foreign keys
+- Use `prefetch_related()` for many-to-many relationships
+- Avoid N+1 queries in dimension lookups
 
-    operations = [
-        migrations.RunSQL(
-            # Create or replace the pivoted view
-            sql="""
-            CREATE OR REPLACE VIEW pivoted_planningfact AS
-            SELECT
-                pf.version_id    AS version,
-                pf.year_id       AS year,
-                pf.org_unit_id   AS org_unit,
-                pf.service_id    AS service,
-                pf.account_id    AS account,
-                pf.key_figure_id AS key_figure,
+### Caching Strategy
+- Cache dimension lookups
+- Cache layout configurations
+- Use Redis for session data
 
-                MAX(CASE WHEN per.code = 'v01' THEN pf.value END) AS v01,
-                MAX(CASE WHEN per.code = 'v02' THEN pf.value END) AS v02,
-                MAX(CASE WHEN per.code = 'v03' THEN pf.value END) AS v03,
-                MAX(CASE WHEN per.code = 'v04' THEN pf.value END) AS v04,
-                MAX(CASE WHEN per.code = 'v05' THEN pf.value END) AS v05,
-                MAX(CASE WHEN per.code = 'v06' THEN pf.value END) AS v06,
-                MAX(CASE WHEN per.code = 'v07' THEN pf.value END) AS v07,
-                MAX(CASE WHEN per.code = 'v08' THEN pf.value END) AS v08,
-                MAX(CASE WHEN per.code = 'v09' THEN pf.value END) AS v09,
-                MAX(CASE WHEN per.code = 'v10' THEN pf.value END) AS v10,
-                MAX(CASE WHEN per.code = 'v11' THEN pf.value END) AS v11,
-                MAX(CASE WHEN per.code = 'v12' THEN pf.value END) AS v12,
+## Best Practices
 
-                MAX(CASE WHEN per.code = 'r01' THEN pf.ref_value END) AS r01,
-                MAX(CASE WHEN per.code = 'r02' THEN pf.ref_value END) AS r02,
-                MAX(CASE WHEN per.code = 'r03' THEN pf.ref_value END) AS r03,
-                MAX(CASE WHEN per.code = 'r04' THEN pf.ref_value END) AS r04,
-                MAX(CASE WHEN per.code = 'r05' THEN pf.ref_value END) AS r05,
-                MAX(CASE WHEN per.code = 'r06' THEN pf.ref_value END) AS r06,
-                MAX(CASE WHEN per.code = 'r07' THEN pf.ref_value END) AS r07,
-                MAX(CASE WHEN per.code = 'r08' THEN pf.ref_value END) AS r08,
-                MAX(CASE WHEN per.code = 'r09' THEN pf.ref_value END) AS r09,
-                MAX(CASE WHEN per.code = 'r10' THEN pf.ref_value END) AS r10,
-                MAX(CASE WHEN per.code = 'r11' THEN pf.ref_value END) AS r11,
-                MAX(CASE WHEN per.code = 'r12' THEN pf.ref_value END) AS r12,
+### Model Design
+- Keep models focused and cohesive
+- Use abstract base classes for common fields
+- Implement proper `__str__` methods
+- Add helpful model metadata
 
-                SUM(CASE WHEN per.code LIKE 'v%' THEN pf.value ELSE 0 END)     AS total_value,
-                SUM(CASE WHEN per.code LIKE 'r%' THEN pf.ref_value ELSE 0 END) AS total_reference
+### Relationships
+- Use appropriate `on_delete` behaviors
+- Consider performance implications of relationships
+- Use `related_name` for clarity
 
-            FROM bps_planningfact AS pf
-            JOIN bps_period       AS per ON pf.period_id = per.id
-            GROUP BY
-                pf.version_id,
-                pf.year_id,
-                pf.org_unit_id,
-                pf.service_id,
-                pf.account_id,
-                pf.key_figure_id;
-            """,
-            # Rollback: drop the view
-            reverse_sql="DROP VIEW IF EXISTS pivoted_planningfact;"
-        )
-    ]
-```
+### Validation
+- Implement model-level validation
+- Use custom validators for business rules
+- Validate JSONB structure where needed
+
+## Future Enhancements
+
+### Planned Improvements
+- Star schema data mart for analytics
+- Enhanced hierarchy management with django-mptt
+- Temporal data support for historical tracking
+- Advanced caching with Redis integration

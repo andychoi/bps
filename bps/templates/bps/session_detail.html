@@ -23,7 +23,7 @@
   <div class="d-flex justify-content-between align-items-center mb-4">
     <h1>{{ sess.org_unit.name }} — {{ sess.scenario.name }}</h1>
     <a
-      href="{% url 'bps:manual_planning' sess.layout_year.layout.id sess.layout_year.year.id sess.layout_year.version.id %}"
+      href="{% url 'bps:manual_planning' sess.layout_year.layout.id sess.layout_year.year.id sess.layout_year.version.id %}?session={{ sess.pk }}"
       class="btn btn-outline-primary"
     >
       📝 Open Manual Planning Grid
