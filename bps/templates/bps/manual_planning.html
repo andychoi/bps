@@ -80,6 +80,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
   const kfMeta         = {{ kf_meta_js|safe }};
   const headerDrivers  = {{ header_drivers_js|safe }};
   const rowDrivers     = {{ row_drivers_js|safe }};
+  const columnDrivers  = {{ column_drivers_js|safe }};
   const headerDefaults = {{ header_defaults_js|safe }};
   const services       = {{ services_js|safe }};
   const orgUnits       = {{ org_units_js|safe }};
@@ -96,6 +97,30 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     return v;
   }
 
+  // Parse value field names robustly, even when KF codes contain underscores.
+  // Pattern: "<BUCKET>_<KF>[ _<colDim1> _<colDim2> ...]"
+  // (trailing col dims count == columnDrivers.length, order matches)
+  function parseValueField(field) {
+    const parts = String(field).split('_');
+    const bucketCode = parts[0];
+    const colCount = Array.isArray(columnDrivers) ? columnDrivers.length : 0;
+
+    // All parts after bucket, excluding trailing col dims, are the KF (may include underscores)
+    const kfParts = parts.slice(1, parts.length - (colCount || 0) || undefined);
+    const kf = kfParts.join('_');
+
+    // Map column-dimension values
+    const colVals = colCount > 0 ? parts.slice(parts.length - colCount) : [];
+    const columnDimensions = {};
+    if (colCount > 0) {
+      columnDrivers.forEach((driver, idx) => {
+        columnDimensions[driver.key] = colVals[idx];
+      });
+    }
+
+    return { bucketCode, kf, columnDimensions };
+  }
+
   const toMap = (rows, vKey, lKey) =>
     rows.reduce((acc, r) => (acc[String(r[vKey])] = String(r[lKey]), acc), {});
   const orgUnitMap = toMap(orgUnits, "code", "name");
@@ -104,12 +129,15 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
   rowDrivers.forEach(d => { driverMaps[d.key] = toMap(d.choices, "id", "name"); });
   const headerMaps = {};
   headerDrivers.forEach(d => { headerMaps[d.key] = toMap(d.choices, "id", "name"); });
+  const columnMaps = {};
+  columnDrivers.forEach(d => { columnMaps[d.key] = toMap(d.choices, "id", "name"); });
 
   const bucketFirstPeriodMap = Object.fromEntries(
     buckets.map(b => [b.code, (b.periods && b.periods[0]) || b.code])
   );
 
   const rowKeys = rowDrivers.map(d => d.key);
+  const columnKeys = columnDrivers.map(d => d.key);
   const hasOrgUnitCol = rowKeys.includes("orgunit");
   const hasServiceCol = rowKeys.includes("service");
 
@@ -158,66 +186,151 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     });
   }
 
-  // ---- Columns (dimensions) ----
+  // ---- Columns (dimensions) - respecting order from PlanningLayoutDimension ----
   const dimCols = [];
-  if (hasOrgUnitCol) {
-    dimCols.push({
-      title: "Org Unit",
-      field: "org_unit_code",
-      width: 220,
-      frozen: true,
-      editor: "list",
-      editorParams: listEditorParams(orgUnitMap),
-      formatter: safeLookup(orgUnitMap),
-      headerFilter: "list",
-      headerFilterParams: { values: orgUnitMap, autocomplete: true, clearable: true },
-      headerTooltip: "Search Org Units",
-    });
-  }
-  if (hasServiceCol) {
-    dimCols.push({
-      title: "Service",
-      field: "service_code",
-      width: 220,
-      editor: "list",
-      editorParams: listEditorParams(serviceMap),
-      formatter: safeLookup(serviceMap),
-      headerFilter: "list",
-      headerFilterParams: { values: serviceMap, autocomplete: true, clearable: true },
-      headerTooltip: "Search Services",
-    });
-  }
-  dimCols.push(
-    ...rowDrivers
-      .filter(d => d.key !== "orgunit" && d.key !== "service")
-      .map(d => ({
+  rowDrivers.forEach(d => {
+    if (d.key === "orgunit") {
+      dimCols.push({
+        title: "Org Unit",
+        field: "org_unit_code",
+        minWidth: 150,
+        widthGrow: 1,
+        frozen: true,
+        editor: "list",
+        editorParams: listEditorParams(orgUnitMap),
+        formatter: safeLookup(orgUnitMap),
+        headerFilter: "list",
+        headerFilterParams: { values: orgUnitMap, autocomplete: true, clearable: true },
+        headerTooltip: "Search Org Units",
+      });
+    } else if (d.key === "service") {
+      dimCols.push({
+        title: "Service",
+        field: "service_code",
+        minWidth: 150,
+        widthGrow: 1,
+        editor: "list",
+        editorParams: listEditorParams(serviceMap),
+        formatter: safeLookup(serviceMap),
+        headerFilter: "list",
+        headerFilterParams: { values: serviceMap, autocomplete: true, clearable: true },
+        headerTooltip: "Search Services",
+      });
+    } else {
+      dimCols.push({
         title: d.label,
         field: `${d.key}_code`,
-        width: 180,
+        minWidth: 120,
+        widthGrow: 1,
         editor: "list",
         editorParams: listEditorParams(driverMaps[d.key] || {}),
         formatter: safeLookup(driverMaps[d.key] || {}),
         headerFilter: "list",
         headerFilterParams: { values: driverMaps[d.key] || {}, autocomplete: true, clearable: true },
         headerTooltip: `Search ${d.label}`,
-      }))
-  );
+      });
+    }
+  });
 
-  // ---- Columns (values) — KEY FIGURES grouped by bucket ----
-  const valueColsGrouped = kfCodes.map(kf => ({
-    title: kf,
-    columns: buckets.map(b => ({
-      title: b.name,
-      field: `${b.code}_${kf}`,
-      editor: overwriteNumberEditor,
-      hozAlign: "right",
-      bottomCalc: "sum",
-      formatter: "money",
-      formatterParams: { symbol: "", precision: (kfMeta && kfMeta[kf] && typeof kfMeta[kf].decimals === "number") ? kfMeta[kf].decimals : 2 },
-    })),
-  }));
+  // ---- Columns (values) — KEY FIGURES grouped by bucket or year-dependent ----
+  const valueColsGrouped = [];
+  const yearDependentCols = [];
 
-  // Simple overwrite-on-first-key editor
+  function generateColumnCombinations() {
+    if (columnDrivers.length === 0) {
+      return [{ key: '', label: '', values: {} }];
+    }
+    const combinations = [{}];
+    columnDrivers.forEach(driver => {
+      const next = [];
+      driver.choices.forEach(choice => {
+        combinations.forEach(combo => {
+          next.push({
+            ...combo,
+            [driver.key]: choice.id,
+            [`${driver.key}_label`]: choice.name
+          });
+        });
+      });
+      combinations.length = 0;
+      combinations.push(...next);
+    });
+    return combinations.map(combo => {
+      const key = columnDrivers.map(d => combo[d.key]).join('_');
+      const label = columnDrivers.map(d => combo[`${d.key}_label`]).join(' - ');
+      const values = {};
+      columnDrivers.forEach(d => { values[d.key] = combo[d.key]; });
+      return { key, label, values };
+    });
+  }
+
+  const columnCombinations = generateColumnCombinations();
+
+  kfCodes.forEach(kf => {
+    const isYearDependent = kfMeta && kfMeta[kf] && kfMeta[kf].is_year_dependent;
+    const decimals = (kfMeta && kfMeta[kf] && typeof kfMeta[kf].decimals === "number") ? kfMeta[kf].decimals : 2;
+
+    if (columnCombinations.length === 1 && !columnCombinations[0].key) {
+      if (isYearDependent) {
+        yearDependentCols.push({
+          title: kf,
+          field: `YEAR_${kf}`,
+          width: 120,
+          editor: overwriteNumberEditor,
+          hozAlign: "right",
+          bottomCalc: "sum",
+          formatter: "money",
+          formatterParams: { symbol: "", precision: decimals },
+        });
+      } else {
+        valueColsGrouped.push({
+          title: kf,
+          columns: buckets.map(b => ({
+            title: b.name,
+            field: `${b.code}_${kf}`,
+            editor: overwriteNumberEditor,
+            hozAlign: "right",
+            bottomCalc: "sum",
+            formatter: "money",
+            formatterParams: { symbol: "", precision: decimals },
+          })),
+        });
+      }
+    } else {
+      columnCombinations.forEach(combo => {
+        const comboSuffix = combo.key ? `_${combo.key}` : '';
+        const comboLabel = combo.label ? ` (${combo.label})` : '';
+        if (isYearDependent) {
+          yearDependentCols.push({
+            title: `${kf}${comboLabel}`,
+            field: `YEAR_${kf}${comboSuffix}`,
+            width: 120,
+            editor: overwriteNumberEditor,
+            hozAlign: "right",
+            bottomCalc: "sum",
+            formatter: "money",
+            formatterParams: { symbol: "", precision: decimals },
+            columnDimensions: combo.values,
+          });
+        } else {
+          valueColsGrouped.push({
+            title: `${kf}${comboLabel}`,
+            columns: buckets.map(b => ({
+              title: b.name,
+              field: `${b.code}_${kf}${comboSuffix}`,
+              editor: overwriteNumberEditor,
+              hozAlign: "right",
+              bottomCalc: "sum",
+              formatter: "money",
+              formatterParams: { symbol: "", precision: decimals },
+              columnDimensions: combo.values,
+            })),
+          });
+        }
+      });
+    }
+  });
+
   function overwriteNumberEditor(cell, onRendered, success, cancel) {
     const input = document.createElement("input");
     input.type = "text";
@@ -242,7 +355,6 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     return input;
   }
 
-  // Build query params for server request
   function buildAjaxParams() {
     const params = { layout: layoutId };
     const hdr = readHeaderSelections();
@@ -250,7 +362,6 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     return params;
   }
 
-  // Helpful group header label: translate codes to display text
   function labelForGroup(field, raw) {
     if (raw == null || raw === "") return "(blank)";
     const key = String(raw);
@@ -261,7 +372,6 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     return map[key] || key;
   }
 
-  // ---- Tabulator init ----
   const tableOptions = {
     layout: "fitColumns",
     ajaxURL: apiURL,
@@ -279,7 +389,6 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
         formatter: (_cell, _params, _onRendered) => "🗑️",
         cellClick: (_e, cell) => toggleDeleteRow(cell.getRow()),
         tooltip: (comp) => {
-          // Only CellComponents have getRow()
           const row = (comp && typeof comp.getRow === "function") ? comp.getRow() : null;
           const data = row ? row.getData() : null;
           if (data && data.__marked_delete) return "Undo delete";
@@ -288,6 +397,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       },
       ...dimCols,
       ...valueColsGrouped,
+      ...yearDependentCols,
     ],
     pagination: "local",
     paginationSize: 50,
@@ -314,7 +424,6 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
 
   const table = new Tabulator("#planning-grid", tableOptions);
 
-  // Header defaults + Apply
   setHeaderDefaults();
   const btnApply = document.getElementById("btn-apply-headers");
   if (btnApply) {
@@ -324,19 +433,28 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     });
   }
 
-  // ---- Export / Add Row ----
   document.getElementById("btn-xlsx").addEventListener("click", () => {
     table.download("xlsx", `${window.ply_code || "planning"}.xlsx`, {sheetName: "Plan"});
   });
 
   const blankRow = (() => {
     const base = {};
-    if (hasOrgUnitCol) base["org_unit_code"] = null;
-    if (hasServiceCol) base["service_code"] = null;
-    rowDrivers
-      .filter(d => d.key !== "orgunit" && d.key !== "service")
-      .forEach(d => { base[`${d.key}_code`] = null; });
-    buckets.forEach(b => { kfCodes.forEach(kf => { base[`${b.code}_${kf}`] = null; }); });
+    rowDrivers.forEach(d => {
+      if (d.key === "orgunit") base["org_unit_code"] = null;
+      else if (d.key === "service") base["service_code"] = null;
+      else base[`${d.key}_code`] = null;
+    });
+    kfCodes.forEach(kf => {
+      const isYearDependent = kfMeta && kfMeta[kf] && kfMeta[kf].is_year_dependent;
+      columnCombinations.forEach(combo => {
+        const comboSuffix = combo.key ? `_${combo.key}` : '';
+        if (isYearDependent) {
+          base[`YEAR_${kf}${comboSuffix}`] = null;
+        } else {
+          buckets.forEach(b => { base[`${b.code}_${kf}${comboSuffix}`] = null; });
+        }
+      });
+    });
     return base;
   })();
 
@@ -348,11 +466,9 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     } catch (e) { console.error(e); }
   });
 
-  // ---- Soft delete toggle ----
   function toggleDeleteRow(row) {
     const d = row.getData();
     d.__marked_delete = !d.__marked_delete;
-    // If marking for delete, we should also clear any pending cell edits to avoid re-creating later
     if (d.__marked_delete) {
       row.getCells().forEach(c => {
         try { c.cancelEdit && c.getElement().classList.contains("tabulator-editing") && c.cancelEdit(); } catch {}
@@ -362,7 +478,6 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     row.getElement().classList.toggle("row-deleted", d.__marked_delete);
   }
 
-  // ---- Utility: send updates (PATCH → fallback POST) ----
   async function sendGridUpdates(payload){
     let res = await fetch(updateURL, {
       method: "PATCH",
@@ -370,7 +485,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       headers: { 
         "Content-Type": "application/json", 
         "X-CSRFToken": getCookie("csrftoken") 
-    },
+      },
       body: JSON.stringify(payload),
     });
     if (res.status === 404 || res.status === 405){
@@ -384,27 +499,58 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     return res;
   }
 
-  // ---- Save logic (numeric changes + dimension "move" + soft deletes) ----
-  const VALUE_FIELDS = buckets.flatMap(b => kfCodes.map(kf => `${b.code}_${kf}`));
+  // Build VALUE_FIELDS including both period-based and year-dependent fields with column dimensions
+  const VALUE_FIELDS = [];
+  kfCodes.forEach(kf => {
+    const isYearDependent = kfMeta && kfMeta[kf] && kfMeta[kf].is_year_dependent;
+    columnCombinations.forEach(combo => {
+      const comboSuffix = combo.key ? `_${combo.key}` : '';
+      if (isYearDependent) {
+        VALUE_FIELDS.push(`YEAR_${kf}${comboSuffix}`);
+      } else {
+        buckets.forEach(b => VALUE_FIELDS.push(`${b.code}_${kf}${comboSuffix}`));
+      }
+    });
+  });
 
-  function dimsFromRowData(d, headerSelected){
-    const base = {}
-    // org unit
+  function dimsFromRowData(d, headerSelected, columnDimensions = {}){
+    const base = {};
+    const extraDims = {};
+
     const orgFromRow = hasOrgUnitCol ? d.org_unit_code : null;
     const orgFromHdr = headerSelected.orgunit || null;
     base.org_unit = orgFromRow || orgFromHdr || null;
-    // service
+
     const svcFromRow = hasServiceCol ? d.service_code : null;
     const svcFromHdr = headerSelected.service || null;
     base.service = svcFromRow || svcFromHdr || null;
-    // extra row dims
+
+    const firstClassDims = ['orgunit', 'service', 'account', 'year', 'version', 'period'];
+
     rowDrivers
       .filter(dr => dr.key !== "orgunit" && dr.key !== "service")
-      .forEach(dr => { base[dr.key] = d[`${dr.key}_code`] ?? null; });
-    // header-only dims
+      .forEach(dr => { 
+        const value = d[`${dr.key}_code`] ?? null;
+        if (firstClassDims.includes(dr.key)) base[dr.key] = value;
+        else if (value) extraDims[dr.key] = value;
+      });
+
     headerDrivers
       .filter(hd => hd.key !== "orgunit" && hd.key !== "service")
-      .forEach(hd => { base[hd.key] = headerSelected[hd.key] ?? null; });
+      .forEach(hd => { 
+        const value = headerSelected[hd.key] ?? null;
+        if (firstClassDims.includes(hd.key)) base[hd.key] = value;
+        else if (value) extraDims[hd.key] = value;
+      });
+
+    columnDrivers.forEach(cd => {
+      const value = columnDimensions[cd.key] ?? null;
+      if (value) extraDims[cd.key] = value;
+    });
+
+    if (Object.keys(extraDims).length > 0) {
+      base.extra_dimensions_json = extraDims;
+    }
     return base;
   }
 
@@ -414,11 +560,10 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
     const updates = [];
     const missingOrgRows = new Set();
 
-    // rows marked for deletion (virtual → physical on save)
     const rowsMarkedForDelete = table.getRows().filter(r => !!r.getData().__marked_delete);
     const deletedRowIds = new Set(rowsMarkedForDelete.map(r => r.getIndex()));
 
-    // 0) Push delete_row updates first
+    // 0) delete_row updates first
     for (const row of rowsMarkedForDelete) {
       const d = row.getData();
       const base = dimsFromRowData(d, headerSelected);
@@ -426,36 +571,24 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
         missingOrgRows.add(row.getPosition(true));
         continue;
       }
-
       let pushed = 0;
       for (const field of VALUE_FIELDS) {
         const val = d[field];
         if (val != null && val !== "") {
-          const sep = field.indexOf("_");
-          const bucketCode = field.slice(0, sep);
-          const kf = field.slice(sep + 1);
-          const period = bucketFirstPeriodMap[bucketCode] || bucketCode;
-
-          updates.push({
-            ...base,
-            period,
-            key_figure: kf,
-            delete_row: true,
-          });
+          const { bucketCode, kf, columnDimensions } = parseValueField(field);
+          const baseDims = dimsFromRowData(d, headerSelected, columnDimensions);
+          const update = { ...baseDims, key_figure: kf, delete_row: true };
+          update.period = (bucketCode === "YEAR") ? null : (bucketFirstPeriodMap[bucketCode] || bucketCode);
+          updates.push(update);
           pushed++;
         }
       }
-
-      // Fallback: if no non-empty value cells found, send a single row-level delete
       if (pushed === 0) {
-        updates.push({
-          ...base,
-          delete_row: true, // no period/key_figure => API deletes all facts matching the dims
-        });
+        const baseDims = dimsFromRowData(d, headerSelected);
+        updates.push({ ...baseDims, delete_row: true });
       }
     }
 
-    // separate numeric and dimension edits, excluding deleted rows
     const valueCells = editedCells
       .filter(c => VALUE_FIELDS.includes(c.getField()))
       .filter(c => !deletedRowIds.has(c.getRow().getIndex()));
@@ -463,42 +596,44 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       .filter(c => dimFieldNames.includes(c.getField()))
       .filter(c => !deletedRowIds.has(c.getRow().getIndex()));
 
-    // 1) Handle rows where *any* dimension changed: move all existing numeric values
+    // 1) dimension changes → move values
     const rowsWithDimChange = Array.from(new Set(dimCells.map(c => c.getRow())));
-    for (const row of rowsWithDimChange){
-      if (deletedRowIds.has(row.getIndex())) continue; // already deleting
+    for (const row of rowsWithDimChange) {
+      if (deletedRowIds.has(row.getIndex())) continue;
       const dNow = row.getData();
 
-      // reconstruct "old" dimensions by taking current data but replacing edited fields with their oldValue
       const oldD = { ...dNow };
-      for (const c of dimCells.filter(cc => cc.getRow() === row)){
+      for (const c of dimCells.filter(cc => cc.getRow() === row)) {
         oldD[c.getField()] = c.getOldValue();
       }
 
-      const newDims = dimsFromRowData(dNow, headerSelected);
-      const oldDims = dimsFromRowData(oldD, headerSelected);
-
-      if (!newDims.org_unit || !oldDims.org_unit){
-        missingOrgRows.add(row.getPosition(true));
-        continue;
-      }
-
-      for (const field of VALUE_FIELDS){
-        const sep = field.indexOf("_");
-        const bucketCode = field.slice(0, sep);
-        const kf = field.slice(sep + 1);
-        const period = bucketFirstPeriodMap[bucketCode] || bucketCode;
+      for (const field of VALUE_FIELDS) {
+        const { bucketCode, kf, columnDimensions } = parseValueField(field);
         const val = dNow[field];
         if (val == null || val === "") continue;
 
-        // write new
-        updates.push({ ...newDims, period, key_figure: kf, value: val });
-        // delete old
-        updates.push({ ...oldDims, period, key_figure: kf, value: "" });
+        const newDimsWithCol = dimsFromRowData(dNow, headerSelected, columnDimensions);
+        const oldDimsWithCol = dimsFromRowData(oldD,  headerSelected, columnDimensions);
+        if (!newDimsWithCol.org_unit || !oldDimsWithCol.org_unit) {
+          missingOrgRows.add(row.getPosition(true));
+          continue;
+        }
+
+        const baseUpdate = { key_figure: kf, value: val };
+        const baseDelete = { key_figure: kf, value: "" };
+
+        if (bucketCode === "YEAR") {
+          updates.push({ ...newDimsWithCol, ...baseUpdate, period: null });
+          updates.push({ ...oldDimsWithCol, ...baseDelete, period: null });
+        } else {
+          const period = bucketFirstPeriodMap[bucketCode] || bucketCode;
+          updates.push({ ...newDimsWithCol, ...baseUpdate, period });
+          updates.push({ ...oldDimsWithCol, ...baseDelete, period });
+        }
       }
     }
 
-    // 2) Handle plain numeric cell edits (skip rows that had dimension moves or are deleted)
+    // 2) plain numeric edits
     const skipRows = new Set(rowsWithDimChange.map(r => r.getIndex()));
     for (const cell of valueCells){
       const row = cell.getRow();
@@ -506,17 +641,18 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
 
       const d = row.getData();
       const field = cell.getField();
-      const sep = field.indexOf("_");
-      const bucketCode = field.slice(0, sep);
-      const kf = field.slice(sep + 1);
-      const period = bucketFirstPeriodMap[bucketCode] || bucketCode;
 
-      const base = dimsFromRowData(d, headerSelected);
+      const { bucketCode, kf, columnDimensions } = parseValueField(field);
+
+      const base = dimsFromRowData(d, headerSelected, columnDimensions);
       if (!base.org_unit){
         missingOrgRows.add(row.getPosition(true));
         continue;
       }
-      updates.push({ ...base, period, key_figure: kf, value: cell.getValue() });
+
+      const update = { ...base, key_figure: kf, value: cell.getValue() };
+      update.period = (bucketCode === "YEAR") ? null : (bucketFirstPeriodMap[bucketCode] || bucketCode);
+      updates.push(update);
     }
 
     if (!updates.length) {
@@ -549,10 +685,7 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       } else {
         alert(`All changes saved. Updated ${data.updated ?? 0}, deleted ${data.deleted ?? 0}.`);
       }
-      // Always reload from server so the grid reflects the DB after save
-      table.replaceData(apiURL, buildAjaxParams()).then(() => {
-        // clear all soft-delete marks post-refresh
-      });
+      table.replaceData(apiURL, buildAjaxParams());
     })
     .catch((err) => { console.error(err); alert("Save failed."); });
   });

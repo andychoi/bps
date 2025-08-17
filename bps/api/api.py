@@ -1,13 +1,8 @@
 # bps/api/api.py
-
 import re
 from decimal import Decimal
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, List
 from django.core.exceptions import ObjectDoesNotExist
-
-from django.contrib import messages
-from django.template.loader import render_to_string
-from django.contrib.messages import get_messages
 
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
@@ -32,9 +27,12 @@ QTR_FIRST_MONTH = {"Q1": "01", "Q2": "04", "Q3": "07", "Q4": "10"}
 
 
 def normalize_period_code(raw):
+    """Return 'MM' or None (for year-dependent)."""
     if raw is None:
-        raise ValueError("Missing period")
+        return None
     s = str(raw).strip().upper()
+    if s == "" or s == "NULL":
+        return None
     if s.startswith("M") and s[1:].isdigit():
         s = s[1:]
     if s in QTR_FIRST_MONTH:
@@ -76,13 +74,10 @@ class BulkUpdateSerializer(serializers.Serializer):
 
 
 class PlanningGridView(APIView):
-    """
-    Returns grid rows for the manual planning UI, honoring header filters.
-    """
+    """Returns grid rows for the manual planning UI, honoring header filters."""
 
     @staticmethod
     def _extra_matches(stored: dict | None, expected: dict | None) -> bool:
-        # Accept everything if caller didn't specify extra-dim filters
         if not expected:
             return True
         stored_lc = {str(k).lower(): v for k, v in (stored or {}).items()}
@@ -147,9 +142,9 @@ class PlanningGridView(APIView):
             except (TypeError, ValueError):
                 qs = qs.filter(extra_dimensions_json__contains={key: str(val)})
 
-        # Lookup models for JSON dims so we can compare PKs vs codes tolerantly
+        # Lookup label helpers for JSON dims
         dim_models = {ld.content_type.model: ld.content_type.model_class() for ld in all_dims}
-        pk_to_label: Dict[str, Dict[int, str]] = {}        # <-- add
+        pk_to_label: Dict[str, Dict[int, str]] = {}
         code_to_pk: Dict[str, Dict[str, int]] = {}
         pk_to_code: Dict[str, Dict[int, str]] = {}
 
@@ -159,12 +154,12 @@ class PlanningGridView(APIView):
                 items = Model.objects.all().values("id", "code", "name")
                 code_to_pk[key] = {str(it["code"]): it["id"] for it in items}
                 pk_to_code[key] = {it["id"]: str(it["code"]) for it in items}
-                pk_to_label[key] = {it["id"]: (it["name"] or str(it["code"])) for it in items}   # <-- add
+                pk_to_label[key] = {it["id"]: (it["name"] or str(it["code"])) for it in items}
             else:
                 items = Model.objects.all().values("id", "name")
                 code_to_pk[key] = {}
                 pk_to_code[key] = {}
-                pk_to_label[key] = {it["id"]: (it["name"] or str(it["id"])) for it in items}     # <-- add
+                pk_to_label[key] = {it["id"]: (it["name"] or str(it["id"])) for it in items}
 
         def resolve_extra_pk_and_label(key: str, raw):
             if raw is None or raw == "":
@@ -214,11 +209,13 @@ class PlanningGridView(APIView):
                     base[f"{k}_code"] = dim_pk_by_key[k]
                 rows[key_tuple] = base
 
-            col = f"{fact.period.code}_{fact.key_figure.code}"
+            if fact.period:
+                col = f"{fact.period.code}_{fact.key_figure.code}"
+            else:
+                col = f"YEAR_{fact.key_figure.code}"
             rows[key_tuple][col] = float(fact.value)
 
         return Response(list(rows.values()))
-
 
 class PlanningGridBulkUpdateView(APIView):
     # permission_classes = [IsAuthenticated]
@@ -226,19 +223,14 @@ class PlanningGridBulkUpdateView(APIView):
 
     @staticmethod
     def _org_from_any(val):
-        """
-        Accepts pk (int-like) or code (str). If numeric string is not a real PK, fall back to code.
-        """
         if val in (None, "", "NULL", "(null)"):
             raise ValueError("Missing 'org_unit'")
         s = str(val).strip()
-        # try pk if integer-like
         if s.isdigit():
             try:
                 return OrgUnit.objects.get(pk=int(s))
             except ObjectDoesNotExist:
                 pass
-        # fallback to code
         try:
             return OrgUnit.objects.get(code=s)
         except ObjectDoesNotExist:
@@ -246,17 +238,11 @@ class PlanningGridBulkUpdateView(APIView):
 
     @staticmethod
     def _service_from_any(val):
-        """
-        Returns (service_object, flag)
-        flag: "VAL" if a concrete service is provided, "NULL" if explicitly null, None if not provided.
-        Numeric strings try pk first, then fall back to code.
-        """
         if val in (None, "",):
             return None, None
         s = str(val).strip()
         if s.lower() in {"null", "(null)"}:
             return None, "NULL"
-        # try pk then code
         if s.isdigit():
             try:
                 return Service.objects.get(pk=int(s)), "VAL"
@@ -268,19 +254,30 @@ class PlanningGridBulkUpdateView(APIView):
             raise ValueError(f"Service not found for value '{val}'")
 
     @staticmethod
+    def _keyfigure_from_any(val):
+        if val in (None, "",):
+            raise ValueError("Missing 'key_figure'")
+        s = str(val).strip()
+        if s.isdigit():
+            try:
+                return KeyFigure.objects.get(pk=int(s))
+            except ObjectDoesNotExist:
+                pass
+        try:
+            return KeyFigure.objects.get(code__iexact=s)
+        except ObjectDoesNotExist:
+            raise ValueError(f"KeyFigure not found for value '{val}'")
+
+    @staticmethod
     def _extra_matches(stored: dict | None, expected: dict | None,
-                    *, code_to_pk: Dict[str, Dict[str, int]] | None = None,
-                    pk_to_code: Dict[str, Dict[int, str]] | None = None) -> bool:
-        # accept all if caller didn't specify extras
+                       *, code_to_pk: Dict[str, Dict[str, int]] | None = None,
+                       pk_to_code: Dict[str, Dict[int, str]] | None = None) -> bool:
         if not expected:
             return True
-
         stored = stored or {}
+        stored_lc = {str(k).lower(): v for k, v in stored.items()}
         code_to_pk = code_to_pk or {}
         pk_to_code = pk_to_code or {}
-
-        # lower-case keys for tolerant key matching
-        stored_lc = {str(k).lower(): v for k, v in stored.items()}
         for k, v in expected.items():
             key = str(k).lower()
             sv = stored_lc.get(key, None)
@@ -288,31 +285,54 @@ class PlanningGridBulkUpdateView(APIView):
                 continue
             if sv is None or v is None:
                 return False
-
-            # string-equal works first
             if str(sv) == str(v):
                 continue
-
-            # Try PK<->code equivalence if we have maps for this key
-            # expected->stored
+            # tolerant PK<->code equivalence
             try:
                 v_int = int(v)
             except (TypeError, ValueError):
                 v_int = None
-
-            # if stored is PK and expected is code
             if isinstance(sv, int) and v_int is None:
-                # is expected a code that maps to stored PK?
                 if code_to_pk.get(key, {}).get(str(v)) == sv:
                     continue
-            # if stored is code and expected is PK
             if isinstance(sv, str) and v_int is not None:
                 if pk_to_code.get(key, {}).get(v_int) == sv:
                     continue
-
             return False
-
         return True
+
+    def _collect_extras(self, upd: Dict[str, Any], header_defaults: Dict[str, Any],
+                        json_dim_keys: list[str]) -> Dict[str, Any]:
+        """
+        Merge two possible forms of extras:
+          • nested: upd['extra_dimensions_json'] = {...}
+          • flat:   upd[key] for key in json_dim_keys (row overrides header)
+        Cast ints where possible so 12 == "12".
+        """
+        extra: Dict[str, Any] = {}
+
+        nested = upd.get("extra_dimensions_json") or {}
+        for k, v in nested.items():
+            if v is None:
+                continue
+            try:
+                extra[k] = int(v)
+            except (TypeError, ValueError):
+                extra[k] = v
+
+        for key in json_dim_keys:
+            if key in extra:
+                continue
+            val = upd.get(key)
+            if val is None:
+                val = header_defaults.get(key)
+            if val is not None:
+                try:
+                    extra[key] = int(val)
+                except (TypeError, ValueError):
+                    extra[key] = val
+
+        return extra
 
     @transaction.atomic
     def post(self, request, *args, **kwargs):
@@ -346,7 +366,7 @@ class PlanningGridBulkUpdateView(APIView):
         elif service_flag == "NULL":
             qs = qs.filter(service__isnull=True)
 
-        # IMPORTANT: do NOT apply JSON contains here for deletes; we’ll finalize in Python
+        # do NOT filter on JSON here; finalize matching in Python
         return qs
 
     def _handle(self, request):
@@ -364,7 +384,7 @@ class PlanningGridBulkUpdateView(APIView):
         errors: List[Dict[str, Any]] = []
         updated, deleted = 0, 0
 
-        # JSON-backed dims (across layout), excluding OU/Service
+        # JSON dims (exclude OU/Service)
         all_dims = list(ly.layout.dimensions.select_related("content_type"))
         json_dim_keys = [
             ld.content_type.model
@@ -372,19 +392,17 @@ class PlanningGridBulkUpdateView(APIView):
             if ld.content_type.model not in ("orgunit", "service")
         ]
 
+        # PK<->code maps for tolerant JSON matching
         dim_models = {ld.content_type.model: ld.content_type.model_class() for ld in all_dims}
         code_to_pk: Dict[str, Dict[str, int]] = {}
         pk_to_code: Dict[str, Dict[int, str]] = {}
-
         for key in json_dim_keys:
             Model = dim_models[key]
-            # If the model has a "code" field we support PK<->code tolerant matching
             if hasattr(Model, "code"):
                 items = Model.objects.all().values("id", "code")
                 code_to_pk[key] = {str(it["code"]): it["id"] for it in items}
                 pk_to_code[key] = {it["id"]: str(it["code"]) for it in items}
             else:
-                # No code field -> keep empty maps for this key
                 code_to_pk[key] = {}
                 pk_to_code[key] = {}
 
@@ -419,7 +437,7 @@ class PlanningGridBulkUpdateView(APIView):
                 )
             return session
 
-        # ---- Handle explicit deletes first ---------------------------------
+        # ---- Deletes -------------------------------------------------------
         for upd in delete_updates:
             try:
                 org_val = upd.get("org_unit") or header_defaults.get("orgunit") or header_defaults.get("org_unit")
@@ -432,40 +450,26 @@ class PlanningGridBulkUpdateView(APIView):
                     svc_val = header_defaults.get("service")
                 svc_obj, svc_flag = self._service_from_any(svc_val)
 
-                # expected extras = row overrides header
-                expected_extra: Dict[str, Any] = {}
-                for key in json_dim_keys:
-                    val = upd.get(key)
-                    if val is None:
-                        val = header_defaults.get(key)
-                    if val is not None:
-                        expected_extra[key] = val  # keep as-is (PK or code)
+                expected_extra = self._collect_extras(upd, header_defaults, json_dim_keys)
+
+                kf_raw = upd.get("key_figure")
+                kf = self._keyfigure_from_any(kf_raw) if kf_raw else None
 
                 per_raw = upd.get("period")
-                kf_code = upd.get("key_figure")
+                per_code = normalize_period_code(per_raw)
+                per = get_object_or_404(Period, code=per_code) if per_code else None
 
-                if per_raw and kf_code:
-                    per = get_object_or_404(Period, code=normalize_period_code(per_raw))
-                    kf = get_object_or_404(KeyFigure, code=kf_code)
-                    qs = self._build_delete_qs(
-                        ly, org,
-                        period=per, key_figure=kf,
-                        service_obj=svc_obj, service_flag=svc_flag,
-                        extra=None,  # do not narrow by extras at DB level
-                    )
-                    expected = expected_extra
-                else:
-                    qs = self._build_delete_qs(
-                        ly, org,
-                        service_obj=svc_obj, service_flag=svc_flag,
-                        extra=None,
-                    )
-                    expected = expected_extra  # {} means accept all extras
+                qs = self._build_delete_qs(
+                    ly, org,
+                    period=per, key_figure=kf,
+                    service_obj=svc_obj, service_flag=svc_flag,
+                    extra=None,
+                )
 
                 ids = []
                 for f in qs.only("id", "extra_dimensions_json").iterator():
                     if self._extra_matches(
-                        f.extra_dimensions_json, expected,
+                        f.extra_dimensions_json, expected_extra,
                         code_to_pk=code_to_pk, pk_to_code=pk_to_code
                     ):
                         ids.append(f.id)
@@ -477,8 +481,8 @@ class PlanningGridBulkUpdateView(APIView):
 
             except Exception as e:
                 errors.append({"update": upd, "error": str(e)})
-                                
-        # ---- Handle upserts / zero- or blank-as-delete ----------------------
+
+        # ---- Upserts / zero-or-blank-as-delete ----------------------------
         for upd in upsert_updates:
             try:
                 org_val = upd.get("org_unit") or header_defaults.get("orgunit") or header_defaults.get("org_unit")
@@ -486,49 +490,37 @@ class PlanningGridBulkUpdateView(APIView):
                     raise ValueError("Missing 'org_unit' (row or headers)")
                 org = self._org_from_any(org_val)
 
-                # service (may be wildcard on delete, but for upsert we use what caller gave, else None)
                 svc_val = upd.get("service")
                 if svc_val is None:
                     svc_val = header_defaults.get("service")
                 svc_obj, svc_flag = self._service_from_any(svc_val)
 
-                # extra dims (row overrides header)
-                extra: Dict[str, Any] = {}
-                for key in json_dim_keys:
-                    val = upd.get(key)
-                    if val is None:
-                        val = header_defaults.get(key)
-                    if val is not None:
-                        try:
-                            extra[key] = int(val)
-                        except (TypeError, ValueError):
-                            extra[key] = val
+                extra = self._collect_extras(upd, header_defaults, json_dim_keys)
 
-                # period / KF
                 per_raw = upd.get("period")
-                if not per_raw:
-                    raise ValueError("Missing 'period' code")
-                per = get_object_or_404(Period, code=normalize_period_code(per_raw))
+                per_code = normalize_period_code(per_raw)
+                per = get_object_or_404(Period, code=per_code) if per_code else None
 
-                kf_code = upd.get("key_figure")
-                if not kf_code:
+                kf_raw = upd.get("key_figure")
+                if not kf_raw:
                     raise ValueError("Missing 'key_figure' code")
-                kf = get_object_or_404(KeyFigure, code=kf_code)
+                kf = self._keyfigure_from_any(kf_raw)
 
                 raw_val = upd.get("value", None)
                 is_blank = (raw_val is None) or (isinstance(raw_val, str) and raw_val.strip() == "")
 
+                # Delete-on-blank/zero with tolerant JSON match
                 if (delete_blanks and is_blank) or (delete_zeros and not is_blank and Decimal(str(raw_val)) == 0):
                     qs = self._build_delete_qs(
                         ly, org,
                         period=per, key_figure=kf,
                         service_obj=svc_obj, service_flag=svc_flag,
-                        extra=None,  # <-- do not narrow
+                        extra=None,
                     )
                     ids = []
                     for f in qs.only("id", "extra_dimensions_json").iterator():
                         if self._extra_matches(
-                            f.extra_dimensions_json, extra,   # `extra` is the row->header mix you built above
+                            f.extra_dimensions_json, extra,
                             code_to_pk=code_to_pk, pk_to_code=pk_to_code
                         ):
                             ids.append(f.id)
@@ -538,36 +530,57 @@ class PlanningGridBulkUpdateView(APIView):
                         errors.append({"update": upd, "error": "No facts matched for zero/blank deletion"})
                     continue
 
-                # Upsert (create/update fact)
+                # Upsert
                 session = resolve_session_for(org)
                 val = Decimal(str(raw_val))
 
-                dr = DataRequest.objects.create(session=session, description="Manual grid update")
-                fact, created = PlanningFact.objects.get_or_create(
+                base_qs = PlanningFact.objects.filter(
                     session=session,
                     org_unit=org,
-                    service=(svc_obj if svc_flag == "VAL" else None),
                     period=per,
                     key_figure=kf,
-                    extra_dimensions_json=extra,
-                    defaults={
-                        "request": dr,
-                        "version": ly.version,
-                        "year": ly.year,
-                        "uom": kf.default_uom,
-                        "value": val,
-                        "ref_value": Decimal("0"),
-                        "ref_uom": None,
-                    },
                 )
-                if not created:
-                    fact.request = dr
-                    fact.value = val
-                    if extra:
-                        fact.extra_dimensions_json = extra
-                        fact.save(update_fields=["request", "value", "extra_dimensions_json"])
+                if svc_flag == "VAL":
+                    base_qs = base_qs.filter(service=svc_obj)
+                elif svc_flag == "NULL":
+                    base_qs = base_qs.filter(service__isnull=True)
+                else:
+                    base_qs = base_qs.filter(service__isnull=True)
+
+                target = None
+                for f in base_qs.iterator():
+                    if self._extra_matches(
+                        f.extra_dimensions_json, extra,
+                        code_to_pk=code_to_pk, pk_to_code=pk_to_code
+                    ):
+                        target = f
+                        break
+
+                dr = DataRequest.objects.create(session=session, description="Manual grid update")
+                if target:
+                    target.request = dr
+                    target.value = val
+                    if (target.extra_dimensions_json or {}) != extra:
+                        target.extra_dimensions_json = extra
+                        target.save(update_fields=["request", "value", "extra_dimensions_json"])
                     else:
-                        fact.save(update_fields=["request", "value"])
+                        target.save(update_fields=["request", "value"])
+                else:
+                    PlanningFact.objects.create(
+                        request=dr,
+                        session=session,
+                        org_unit=org,
+                        service=(svc_obj if svc_flag == "VAL" else None),
+                        period=per,
+                        key_figure=kf,
+                        extra_dimensions_json=extra,
+                        version=ly.version,
+                        year=ly.year,
+                        uom=kf.default_uom,
+                        value=val,
+                        ref_value=Decimal("0"),
+                        ref_uom=None,
+                    )
                 updated += 1
 
             except Exception as e:

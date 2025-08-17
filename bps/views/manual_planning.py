@@ -49,6 +49,7 @@ class ManualPlanningView(TemplateView):
         all_dims_qs = ly.layout.dimensions.select_related("content_type").order_by("order")
         header_dims_qs = all_dims_qs.filter(is_header=True)
         row_dims_qs = all_dims_qs.filter(is_row=True)
+        column_dims_qs = all_dims_qs.filter(is_column=True)
 
         def _choices_for(dim):
             Model = dim.content_type.model_class()
@@ -82,6 +83,7 @@ class ManualPlanningView(TemplateView):
 
         drivers_for_header = _driver_payload(header_dims_qs)
         drivers_for_rows = _driver_payload(row_dims_qs)
+        drivers_for_columns = _driver_payload(column_dims_qs)
 
         # ---- Default header selections from persisted layout-year config ----
         header_defaults = {}
@@ -110,11 +112,13 @@ class ManualPlanningView(TemplateView):
         )
         kf_codes = [pkf.key_figure.code for pkf in pkf_qs]
 
-        # Per-key-figure UI precision (display_decimals) for cells & totals
-        kf_meta = {
-            k.code: {"decimals": k.display_decimals}
-            for k in KeyFigure.objects.filter(code__in=kf_codes)
-        }
+        # Per-key-figure UI precision (display_decimals) and year-dependency for cells & totals
+        kf_meta = {}
+        for pkf in pkf_qs:
+            kf_meta[pkf.key_figure.code] = {
+                "decimals": pkf.key_figure.display_decimals,
+                "is_year_dependent": pkf.is_yearly
+            }
 
         # ---- Lookup data for common dims (used if they appear as row dims) ----
         services = list(
@@ -181,6 +185,8 @@ class ManualPlanningView(TemplateView):
                 "header_drivers_js": json.dumps(drivers_for_header),  # for client JS
                 "row_drivers": drivers_for_rows,
                 "row_drivers_js": json.dumps(drivers_for_rows),
+                "column_drivers": drivers_for_columns,
+                "column_drivers_js": json.dumps(drivers_for_columns),
 
                 # Header defaults (already merged with Session, if any)
                 "header_defaults_js": json.dumps(header_defaults or {}),

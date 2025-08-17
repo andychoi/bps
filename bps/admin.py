@@ -196,8 +196,10 @@ class ResourceAdmin(admin.ModelAdmin):
 
 @admin.register(KeyFigure)
 class KeyFigureAdmin(admin.ModelAdmin):
-    list_display   = ('code', 'name', 'is_percent')
+    list_display   = ('code', 'name', 'is_percent', 'display_decimals')
+    list_filter    = ('is_percent',)
     search_fields  = ('code', 'name')
+    fields         = ('code', 'name', 'is_percent', 'default_uom', 'display_decimals')
 
 
 # ── Planning Layout & Dimensions ───────────────────────────────────────────
@@ -210,7 +212,7 @@ class KeyFigureAdmin(admin.ModelAdmin):
 class PlanningKeyFigureInline(admin.TabularInline):
     model = PlanningKeyFigure
     extra = 1
-    fields = ("key_figure", "is_editable", "is_computed", "formula", "display_order")
+    fields = ("key_figure", "is_editable", "is_computed", "is_yearly", "formula", "display_order")
     ordering = ("display_order",)
 
 

@@ -134,7 +134,7 @@ class PlanningFact(models.Model):
     version     = models.ForeignKey(Version, on_delete=models.PROTECT)
 
     year        = models.ForeignKey(Year, on_delete=models.PROTECT)
-    period      = models.ForeignKey(Period, on_delete=models.PROTECT)
+    period      = models.ForeignKey(Period, on_delete=models.PROTECT, null=True, blank=True)
     
     org_unit    = models.ForeignKey(OrgUnit, on_delete=models.PROTECT)
 

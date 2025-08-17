@@ -22,12 +22,21 @@
 
   <div class="d-flex justify-content-between align-items-center mb-4">
     <h1>{{ sess.org_unit.name }} — {{ sess.scenario.name }}</h1>
-    <a
-      href="{% url 'bps:manual_planning' sess.layout_year.layout.id sess.layout_year.year.id sess.layout_year.version.id %}?session={{ sess.pk }}"
-      class="btn btn-outline-primary"
-    >
-      📝 Open Manual Planning Grid
-    </a>
+    <div class="d-flex gap-2">
+      <a
+        href="{% url 'admin:bps_planninglayout_change' sess.layout_year.layout.pk %}"
+        class="btn btn-outline-secondary"
+        target="_blank"
+      >
+        ⚙️ Edit Layout
+      </a>
+      <a
+        href="{% url 'bps:manual_planning' sess.layout_year.layout.id sess.layout_year.year.id sess.layout_year.version.id %}?session={{ sess.pk }}"
+        class="btn btn-outline-primary"
+      >
+        📝 Open Manual Planning Grid
+      </a>
+    </div>
   </div>
 
 <div class="d-flex align-items-end gap-2 flex-wrap mb-4">

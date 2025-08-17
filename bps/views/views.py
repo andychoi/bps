@@ -317,6 +317,14 @@ class PlanningSessionDetailView(FormMixin, DetailView):
 
             extra_maps[key] = mapping
 
+
+        def display_period_code(fact):
+            """
+            Return a short display code for the fact's period.
+            Year-dependent rows have no period -> show 'YEAR'.
+            """
+            return fact.period.code if fact.period else "YEAR"
+
         # Build rows for the template, aligned to extra_headers
         facts_rows = []
         for f in page_facts:
@@ -332,7 +340,9 @@ class PlanningSessionDetailView(FormMixin, DetailView):
                 "org_unit":  f.org_unit.name,
                 "service":   f.service.name if f.service else None,
                 "account":   acct_disp,
-                "period":    f.period.code,
+                # "period":    f.period.code,
+                "period":     display_period_code(f),
+                "key_figure": f.key_figure.code,
                 "key_figure": f.key_figure.code,
                 "value":     f.value,
                 "uom":       f.uom.code if f.uom else None,

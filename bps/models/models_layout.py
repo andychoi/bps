@@ -140,6 +140,7 @@ class PlanningKeyFigure(models.Model):
     key_figure    = models.ForeignKey('bps.KeyFigure', on_delete=models.CASCADE)
     is_editable   = models.BooleanField(default=True)
     is_computed   = models.BooleanField(default=False)
+    is_yearly     = models.BooleanField(default=False, help_text="If true, this key figure is planned at year level without periods for this layout.")
     formula       = models.TextField(blank=True)
     display_order = models.PositiveSmallIntegerField(default=0)
 
