@@ -13,6 +13,7 @@ from .models.models import (
     PlanningFunction, ReferenceData, KeyFigure, DataRequest, DataRequestLog, PlanningFact,
     PlanningSession, PlanningStage, Period, PeriodGrouping, RateCard, Position, Resource, Skill
 )
+from .models.models_extras import DimensionKey, PlanningFactExtra
 
 from .models.models_layout import (
     PlanningLayout, PlanningLayoutYear, PlanningLayoutDimension, LayoutDimensionOverride, PlanningKeyFigure
@@ -458,4 +459,16 @@ class RateCardAdmin(admin.ModelAdmin):
 class PositionAdmin(admin.ModelAdmin):
     list_display = ('year','code','skill','level','fte','is_open')
     list_filter  = ('year','level','is_open')
-    search_fields = ('code','skill__name')    
+    search_fields = ('code','skill__name')
+
+@admin.register(DimensionKey)
+class DimensionKeyAdmin(admin.ModelAdmin):
+    list_display = ('key', 'content_type')
+    list_filter = ('content_type',)
+    search_fields = ('key',)
+
+@admin.register(PlanningFactExtra)
+class PlanningFactExtraAdmin(admin.ModelAdmin):
+    list_display = ('fact', 'key', 'content_type', 'object_id', 'value_obj')
+    list_filter = ('key', 'content_type')
+    search_fields = ('fact__id', 'key__key')    

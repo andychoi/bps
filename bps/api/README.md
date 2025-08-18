@@ -113,8 +113,9 @@ Basic update operations for manual planning.
 
 ### Flexible Filtering
 - Header-based dimension filtering
-- Dynamic dimension support via JSONB
-- Tolerant matching for dimension values
+- Dynamic dimension support via PlanningFactExtra
+- Tolerant matching for dimension values (PK or code)
+- Proper FK-based dimension validation
 
 ### Error Handling
 - Detailed error reporting per update
@@ -131,12 +132,14 @@ Basic update operations for manual planning.
 5. Return JSON response
 
 ### Write Operations
-1. Validate request payload
-2. Split deletes from upserts
-3. Process deletes first
-4. Handle upserts with session resolution
-5. Create audit trail
-6. Return operation summary
+1. Validate request payload and dimension keys
+2. Resolve dimension values (PK or code) to proper objects
+3. Split deletes from upserts
+4. Process deletes first
+5. Handle upserts with session resolution
+6. Create PlanningFactExtra entries for extra dimensions
+7. Create audit trail
+8. Return operation summary
 
 ## Authentication & Authorization
 
@@ -155,7 +158,8 @@ Basic update operations for manual planning.
 ### Query Optimization
 - Selective field loading with `only()`
 - Iterator usage for large datasets
-- Efficient JSONB filtering
+- Efficient FK-based dimension filtering
+- Prefetch related extra dimensions
 
 ### Bulk Processing
 - Batch database operations

@@ -8,102 +8,116 @@ This document outlines the management commands for generating comprehensive demo
 
 ### Core Planning Layouts
 
-#### 1. Resource Capacity Planning Layout
+#### 1. Resource Capacity Planning Layout (YEARLY)
 **Purpose**: Plan FTE, contractor, and MSP capacity by skill and seniority level.
 
 **Dimensions**:
 - **Rows**: Resource Type, Skill, Seniority Level, Country
-- **Columns**: Monthly periods (Jan-Dec)
-- **Key Figures**: FTE_COUNT, MAN_MONTHS, HOURLY_RATE, TOTAL_COST
+- **Columns**: Annual capacity (no periods)
+- **Key Figures**: FTE_COUNT, ANNUAL_COST, HOURLY_RATE
+
+**Planning Type**: Year-dependent (annual hiring and capacity planning)
 
 **Sample Structure**:
 ```
-| Resource Type | Skill           | Level  | Country | Jan FTE | Jan MM | Hourly Rate | Jan Cost |
-|---------------|-----------------|--------|---------|--------:|-------:|------------:|---------:|
-| FTE           | Developer       | Senior | USA     |     2.0 |    2.0 |      $85.00 | $27,200  |
-| CON           | DevOps Engineer | Mid    | India   |     3.0 |    3.0 |      $45.00 | $21,600  |
-| MSP           | Security Analyst| Senior | Mexico  |     1.0 |    1.0 |      $65.00 | $10,400  |
+| Resource Type | Skill           | Level  | Country | Annual FTE | Hourly Rate | Annual Cost |
+|---------------|-----------------|--------|---------|----------:|------------:|------------:|
+| FTE           | Developer       | Senior | USA     |       2.0 |      $85.00 |    $340,000 |
+| CON           | DevOps Engineer | Mid    | India   |       3.0 |      $45.00 |    $270,000 |
+| MSP           | Security Analyst| Senior | Mexico  |       1.0 |      $65.00 |    $130,000 |
 ```
 
-#### 2. Service Resource Allocation Layout
-**Purpose**: Allocate resource capacity across business systems with utilization tracking.
+**Note**: Hiring mid-year (e.g., July) would be planned as 0.5 FTE for the annual plan.
+
+#### 2. Service Resource Allocation Layout (YEARLY)
+**Purpose**: Allocate resource capacity across business systems with annual utilization tracking.
 
 **Dimensions**:
 - **Rows**: Resource ID, Service Code
-- **Columns**: Monthly allocation percentages and man-months
-- **Key Figures**: ALLOCATION_PCT, ALLOCATED_MM, UTILIZATION_RATE
+- **Columns**: Annual allocation (no periods)
+- **Key Figures**: ALLOCATION_PCT, ALLOCATED_FTE, UTILIZATION_RATE, ANNUAL_COST
+
+**Planning Type**: Year-dependent (no monthly breakdown)
 
 **Sample Structure**:
 ```
-| Resource ID | Service Code | Allocation % | Jan MM | Utilization | Efficiency |
-|-------------|--------------|-------------:|-------:|------------:|-----------:|
-| FTE-DEV-01  | CRM_SYSTEM   |          60% |    0.6 |        95% |       1.2x |
-| FTE-DEV-01  | ERP_SYSTEM   |          40% |    0.4 |        95% |       1.2x |
-| CON-QA-02   | CRM_SYSTEM   |         100% |    1.0 |        85% |       1.0x |
+| Resource ID | Service Code | Allocation % | Annual FTE | Utilization | Annual Cost |
+|-------------|--------------|-------------:|-----------:|------------:|------------:|
+| FTE-DEV-01  | CRM_SYSTEM   |          60% |        0.6 |        95% |     $51,000 |
+| FTE-DEV-01  | ERP_SYSTEM   |          40% |        0.4 |        95% |     $34,000 |
+| CON-QA-02   | CRM_SYSTEM   |         100% |        1.0 |        85% |     $96,000 |
 ```
 
-#### 3. Service Demand Planning Layout
-**Purpose**: Aggregate skill demand by service with capacity gap analysis.
+#### 3. Service Demand Planning Layout (YEARLY)
+**Purpose**: Aggregate skill demand by service with annual capacity gap analysis.
 
 **Dimensions**:
 - **Rows**: Service Code, Skill, Seniority Level
-- **Columns**: Monthly demand and supply metrics
-- **Key Figures**: DEMAND_MM, SUPPLY_MM, GAP_MM, COST_PER_MM
+- **Columns**: Annual demand (no periods)
+- **Key Figures**: DEMAND_FTE, SUPPLY_FTE, GAP_FTE, ANNUAL_COST
+
+**Planning Type**: Year-dependent (strategic capacity planning)
 
 **Sample Structure**:
 ```
-| Service Code | Skill       | Level  | Jan Demand | Jan Supply | Gap MM | Cost/MM |
-|--------------|-------------|--------|-----------:|-----------:|-------:|--------:|
-| CRM_SYSTEM   | Developer   | Senior |        3.5 |        3.0 |   -0.5 | $13,600 |
-| ERP_SYSTEM   | DevOps      | Mid    |        2.0 |        2.5 |    0.5 |  $7,200 |
+| Service Code | Skill       | Level  | Annual Demand | Annual Supply | Gap FTE | Annual Cost |
+|--------------|-------------|--------|-------------:|-------------:|--------:|------------:|
+| CRM_SYSTEM   | Developer   | Senior |          3.5 |          3.0 |    -0.5 |    $280,000 |
+| ERP_SYSTEM   | DevOps      | Mid    |          2.0 |          2.5 |     0.5 |    $180,000 |
 ```
 
-#### 4. Software License Cost Planning Layout
-**Purpose**: Plan software licensing costs with usage-based drivers and benchmarking.
+#### 4. Software License Cost Planning Layout (YEARLY)
+**Purpose**: Plan software licensing costs with annual contracts and benchmarking.
 
 **Dimensions**:
 - **Rows**: Service Code, Software Product, License Type
-- **Columns**: Monthly usage metrics and costs
-- **Key Figures**: USER_COUNT, UNIT_PRICE, LICENSE_COST, BENCHMARK_PRICE
+- **Columns**: Annual licensing (no periods)
+- **Key Figures**: USER_COUNT, UNIT_PRICE, ANNUAL_LICENSE_COST, BENCHMARK_PRICE
+
+**Planning Type**: Year-dependent (annual license contracts)
 
 **Sample Structure**:
 ```
-| Service Code | Software Product | License Type | Jan Users | Unit Price | Jan Cost | Benchmark |
-|--------------|------------------|--------------|----------:|-----------:|---------:|----------:|
-| CRM_SYSTEM   | Salesforce       | Professional |       150 |     $75.00 | $11,250  |    $70.00 |
-| ERP_SYSTEM   | SAP S/4HANA      | Named User   |        80 |    $180.00 | $14,400  |   $175.00 |
+| Service Code | Software Product | License Type | Annual Users | Unit Price | Annual Cost | Benchmark |
+|--------------|------------------|--------------|-------------:|-----------:|------------:|----------:|
+| CRM_SYSTEM   | Salesforce       | Professional |          150 |     $75.00 |    $135,000 |    $70.00 |
+| ERP_SYSTEM   | SAP S/4HANA      | Named User   |           80 |    $180.00 |    $172,800 |   $175.00 |
 ```
 
-#### 5. Infrastructure Cost Planning Layout
+#### 5. Infrastructure Cost Planning Layout (YEARLY)
 **Purpose**: Plan infrastructure costs including cloud, hardware, and network expenses.
 
 **Dimensions**:
 - **Rows**: Service Code, Infrastructure Component, Provider
-- **Columns**: Monthly usage and cost metrics
-- **Key Figures**: COMPUTE_HOURS, STORAGE_GB, NETWORK_GB, INFRA_COST
+- **Columns**: Annual infrastructure budget (no periods)
+- **Key Figures**: ANNUAL_COMPUTE_COST, ANNUAL_STORAGE_COST, ANNUAL_NETWORK_COST, TOTAL_INFRA_COST
+
+**Planning Type**: Year-dependent (annual infrastructure budget)
 
 **Sample Structure**:
 ```
-| Service Code | Component Type | Provider | Jan Compute | Storage GB | Network GB | Jan Cost |
-|--------------|----------------|----------|------------:|-----------:|-----------:|---------:|
-| CRM_SYSTEM   | Compute        | AWS      |       2,400 |      1,000 |        500 |   $3,200 |
-| ERP_SYSTEM   | Database       | Azure    |       1,800 |      5,000 |        800 |   $4,500 |
+| Service Code | Component Type | Provider | Annual Compute | Annual Storage | Annual Network | Annual Cost |
+|--------------|----------------|----------|---------------:|---------------:|---------------:|------------:|
+| CRM_SYSTEM   | Compute        | AWS      |        $28,800 |        $12,000 |         $6,000 |     $46,800 |
+| ERP_SYSTEM   | Database       | Azure    |        $21,600 |        $60,000 |         $9,600 |     $91,200 |
 ```
 
-#### 6. Service Total Cost Layout (Consolidated)
+#### 6. Service Total Cost Layout (Consolidated) (YEARLY)
 **Purpose**: Aggregate all cost components per service with variance analysis.
 
 **Dimensions**:
 - **Rows**: Service Code, Cost Category
-- **Columns**: Monthly costs and variance metrics
+- **Columns**: Annual costs (no periods)
 - **Key Figures**: LABOR_COST, LICENSE_COST, INFRA_COST, TOTAL_COST, BUDGET_VAR
+
+**Planning Type**: Year-dependent (annual service cost consolidation)
 
 **Sample Structure**:
 ```
-| Service Code | Jan Labor | Jan License | Jan Infra | Jan Total | Budget Var | Benchmark |
-|--------------|----------:|------------:|----------:|----------:|-----------:|----------:|
-| CRM_SYSTEM   |   $85,000 |    $11,250 |    $3,200 |   $99,450 |      +5.2% |   $94,500 |
-| ERP_SYSTEM   |   $65,000 |    $14,400 |    $4,500 |   $83,900 |      -2.1% |   $85,800 |
+| Service Code | Annual Labor | Annual License | Annual Infra | Annual Total | Budget Var | Benchmark |
+|--------------|-------------:|---------------:|-------------:|-------------:|-----------:|----------:|
+| CRM_SYSTEM   |    $1,020,000 |       $135,000 |      $46,800 |   $1,201,800 |      +5.2% | $1,134,000 |
+| ERP_SYSTEM   |      $780,000 |       $172,800 |      $91,200 |   $1,044,000 |      -2.1% | $1,066,800 |
 ```
 
 ## Benchmarking & Best Practices
@@ -215,6 +229,85 @@ BENCHMARK_SOURCES = [
 
 ### Optimistic Scenario (2026 Plan)
 - 15% productivity improvement through automation
+- 10% reduction in offshore labor rates
+- 20% increase in cloud efficiency
+- New service launches driving 25% revenue growth
+
+### Conservative Scenario (2026 Plan)
+- 5% productivity improvement
+- Market-rate labor cost increases (3-5%)
+- Standard cloud cost optimization (10%)
+- Moderate service growth (10%)
+
+## Implementation Notes
+
+### Yearly Planning Configuration
+The following layouts use **year-dependent planning** (no monthly periods):
+- **RES_FTE**: Annual FTE capacity planning (hiring mid-year = 0.5 FTE)
+- **RES_CON**: Annual contractor and MSP planning
+- **SYS_DEMAND**: Strategic capacity planning at annual level
+- **RES_ALLOC**: Annual resource allocation percentages
+- **SW_LICENSE**: Annual license contracts and renewals
+- **INFRA_COST**: Annual infrastructure budget planning
+- **SRV_COST**: Annual service cost consolidation
+
+### Monthly Planning Configuration
+The following layouts use **monthly planning**:
+- **ADMIN_OVH**: Monthly overhead allocation (operational detail)
+
+### Key Figure Mapping
+```python
+YEARLY_KEY_FIGURES = {
+    'RES_FTE': ['FTE', 'COST'],
+    'RES_CON': ['FTE', 'COST'],
+    'SYS_DEMAND': ['FTE', 'COST'],
+    'RES_ALLOC': ['FTE', 'UTIL', 'COST'],
+    'SW_LICENSE': ['LICENSE_VOLUME', 'LICENSE_UNIT_PRICE', 'LICENSE_COST'],
+    'INFRA_COST': ['INFRA_COST'],
+    'SRV_COST': ['COST', 'LICENSE_COST', 'INFRA_COST', 'ADMIN_OVERHEAD', 'TOTAL_COST']
+}
+
+MONTHLY_KEY_FIGURES = {
+    'ADMIN_OVH': ['ADMIN_OVERHEAD']
+}
+```
+
+## Data Validation Rules
+
+### Resource Allocation Constraints
+- Total allocation per resource cannot exceed 100%
+- Minimum utilization threshold: 70%
+- Maximum utilization threshold: 95%
+
+### Cost Validation
+- Service total cost = Labor + License + Infrastructure + Admin Overhead
+- Budget variance alerts for >10% deviation
+- Benchmark comparison for cost optimization
+
+### Capacity Planning Rules
+- Demand-supply gap analysis with escalation thresholds
+- Skill mix optimization recommendations
+- Geographic cost arbitrage opportunities
+
+## Reporting & Analytics
+
+### Executive Dashboard
+- Total IT cost by service and category
+- Budget vs. actual variance analysis
+- Resource utilization trends
+- Cost per service benchmarking
+
+### Operational Reports
+- Resource allocation efficiency
+- License utilization optimization
+- Infrastructure cost trends
+- Service demand forecasting
+
+### Benchmark Analysis
+- Industry cost comparisons
+- Vendor pricing benchmarks
+- Productivity metrics
+- Cost optimization opportunitiesuctivity improvement through automation
 - 10% cost reduction via geographic optimization
 - 95% resource utilization target
 - Strategic vendor negotiations (-5% license costs)

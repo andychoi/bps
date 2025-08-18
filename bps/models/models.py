@@ -142,7 +142,7 @@ class PlanningFact(models.Model):
     account   = models.ForeignKey(Account, null=True, blank=True, on_delete=models.PROTECT)
 
     # Optional domain-specific dimensions
-    extra_dimensions_json = models.JSONField(default=dict, help_text="Mapping of extra dimension name → selected dimension key: e.g. {'Position':123, 'SkillGroup':'Developer'}")
+    # extra_dimensions_json = models.JSONField(default=dict, help_text="Mapping of extra dimension name → selected dimension key: e.g. {'Position':123, 'SkillGroup':'Developer'}")
 
     # Key figure
     # key_figure  = models.CharField(max_length=100)  
@@ -178,7 +178,8 @@ class PlanningFact(models.Model):
         return round(self.value * rate, 2)
 
 # ── 6. Pivoted Planning Fact View ───────────────────────────────────────────
-from .models_view import *  
+from .models_view import *
+from .models_extras import *  
 
 """ duplicate with extra_dimensions_json, obsolete model
 """

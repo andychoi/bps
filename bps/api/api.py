@@ -16,6 +16,8 @@ from bps.models.models_layout import PlanningLayoutYear
 from bps.models.models import PlanningFact, Period, KeyFigure, DataRequest
 from bps.models.models_dimension import OrgUnit, Service
 from bps.models.models_workflow import PlanningSession, PlanningScenario, ScenarioStep
+from bps.models.models_extras import PlanningFactExtra, DimensionKey
+from django.contrib.contenttypes.models import ContentType
 
 
 MONTH_ALIASES = {
@@ -96,11 +98,12 @@ class PlanningGridView(APIView):
         dim_keys = [ld.content_type.model for ld in all_dims]
         json_dim_keys = [k for k in dim_keys if k not in ("orgunit", "service")]
 
-        # Base queryset
+        # Base queryset with extra dimensions
         qs = (
             PlanningFact.objects
             .filter(session__scenario__layout_year=ly)
             .select_related("org_unit", "service", "period", "key_figure", "session__org_unit")
+            .prefetch_related("extras__key", "extras__value_obj")
         )
 
         # Header filters
@@ -122,7 +125,7 @@ class PlanningGridView(APIView):
             elif kind == "NULL":
                 qs = qs.filter(service__isnull=True)
 
-        # Extra header filters (coarse DB narrowing + final tolerant check)
+        # Extra header filters using PlanningFactExtra
         extra_filters: Dict[str, Any] = {}
         for param, val in request.query_params.items():
             if not param.startswith("header_"):
@@ -133,14 +136,22 @@ class PlanningGridView(APIView):
             if val is None or val == "":
                 continue
             extra_filters[key] = val
+            
+            # Filter by extra dimensions
             try:
-                v_int = int(val)
-                qs = qs.filter(
-                    Q(extra_dimensions_json__contains={key: v_int}) |
-                    Q(extra_dimensions_json__contains={key: str(v_int)})
-                )
-            except (TypeError, ValueError):
-                qs = qs.filter(extra_dimensions_json__contains={key: str(val)})
+                dim_key = DimensionKey.objects.get(key=key)
+                kind, v = parse_pk_or_code(val)
+                if kind == "PK":
+                    qs = qs.filter(extras__key=dim_key, extras__object_id=v)
+                elif kind == "CODE":
+                    # Find by code in the target model
+                    Model = dim_key.content_type.model_class()
+                    if hasattr(Model, 'code'):
+                        obj = Model.objects.filter(code=v).first()
+                        if obj:
+                            qs = qs.filter(extras__key=dim_key, extras__object_id=obj.pk)
+            except DimensionKey.DoesNotExist:
+                continue
 
         # Lookup label helpers for JSON dims
         dim_models = {ld.content_type.model: ld.content_type.model_class() for ld in all_dims}
@@ -172,26 +183,33 @@ class PlanningGridView(APIView):
                 return pk, pk_to_label.get(key, {}).get(pk)
             return None, None
 
-        # Build rows
+        # Build rows using PlanningFactExtra
         rows = {}
         for fact in qs.iterator():
-            # final tolerant check for extra header filters
-            if extra_filters and not self._extra_matches(fact.extra_dimensions_json, extra_filters):
-                continue
-
             org_code = fact.org_unit.code
             svc_code = fact.service.code if fact.service else ""
-            ed = fact.extra_dimensions_json or {}
-            ed_lc = {str(k).lower(): v for k, v in ed.items()}
+            
+            # Get extra dimensions from PlanningFactExtra
+            extras_dict = {}
+            for extra in fact.extras.all():
+                extras_dict[extra.key.key] = {
+                    'pk': extra.object_id,
+                    'obj': extra.value_obj
+                }
 
             dim_pks = []
             dim_pk_by_key = {}
             dim_lbl_by_key = {}
             for key in json_dim_keys:
-                raw = ed.get(key)
-                if raw is None:
-                    raw = ed_lc.get(key.lower())
-                pk, lbl = resolve_extra_pk_and_label(key, raw)
+                extra_info = extras_dict.get(key)
+                if extra_info:
+                    pk = extra_info['pk']
+                    obj = extra_info['obj']
+                    lbl = getattr(obj, 'name', None) or getattr(obj, 'code', None) or str(obj)
+                else:
+                    pk = None
+                    lbl = None
+                
                 dim_pks.append(pk)
                 dim_pk_by_key[key] = pk
                 dim_lbl_by_key[key] = lbl
@@ -301,36 +319,54 @@ class PlanningGridBulkUpdateView(APIView):
             return False
         return True
 
+    def _resolve_dimension_value(self, key: str, val: Any) -> tuple[ContentType, int] | None:
+        """Resolve dimension key/value to (content_type, object_id) for PlanningFactExtra."""
+        try:
+            dim_key = DimensionKey.objects.get(key=key)
+            Model = dim_key.content_type.model_class()
+            
+            kind, v = parse_pk_or_code(val)
+            if kind == "PK":
+                if Model.objects.filter(pk=v).exists():
+                    return dim_key.content_type, v
+            elif kind == "CODE" and hasattr(Model, 'code'):
+                obj = Model.objects.filter(code=v).first()
+                if obj:
+                    return dim_key.content_type, obj.pk
+            return None
+        except DimensionKey.DoesNotExist:
+            raise ValueError(f"Unknown dimension key: {key}")
+    
     def _collect_extras(self, upd: Dict[str, Any], header_defaults: Dict[str, Any],
-                        json_dim_keys: list[str]) -> Dict[str, Any]:
+                        json_dim_keys: list[str]) -> Dict[str, tuple[ContentType, int]]:
         """
-        Merge two possible forms of extras:
-          • nested: upd['extra_dimensions_json'] = {...}
-          • flat:   upd[key] for key in json_dim_keys (row overrides header)
-        Cast ints where possible so 12 == "12".
+        Collect extra dimensions from update data and headers.
+        Returns dict of {key: (content_type, object_id)} for PlanningFactExtra creation.
         """
-        extra: Dict[str, Any] = {}
+        extra: Dict[str, tuple[ContentType, int]] = {}
+        raw_extra: Dict[str, Any] = {}
 
+        # Handle nested format (backward compatibility)
         nested = upd.get("extra_dimensions_json") or {}
         for k, v in nested.items():
-            if v is None:
-                continue
-            try:
-                extra[k] = int(v)
-            except (TypeError, ValueError):
-                extra[k] = v
+            if v is not None:
+                raw_extra[k] = v
 
+        # Handle flat format (preferred)
         for key in json_dim_keys:
-            if key in extra:
+            if key in raw_extra:
                 continue
             val = upd.get(key)
             if val is None:
                 val = header_defaults.get(key)
             if val is not None:
-                try:
-                    extra[key] = int(val)
-                except (TypeError, ValueError):
-                    extra[key] = val
+                raw_extra[key] = val
+
+        # Resolve to (content_type, object_id)
+        for key, val in raw_extra.items():
+            resolved = self._resolve_dimension_value(key, val)
+            if resolved:
+                extra[key] = resolved
 
         return extra
 
@@ -466,10 +502,16 @@ class PlanningGridBulkUpdateView(APIView):
                     extra=None,
                 )
 
+                # For deletes, we need to match extra dimensions
                 ids = []
-                for f in qs.only("id", "extra_dimensions_json").iterator():
+                for f in qs.prefetch_related('extras__key', 'extras__value_obj').iterator():
+                    # Convert PlanningFactExtra to dict for matching
+                    f_extras = {}
+                    for extra in f.extras.all():
+                        f_extras[extra.key.key] = extra.object_id
+                    
                     if self._extra_matches(
-                        f.extra_dimensions_json, expected_extra,
+                        f_extras, expected_extra,
                         code_to_pk=code_to_pk, pk_to_code=pk_to_code
                     ):
                         ids.append(f.id)
@@ -518,9 +560,14 @@ class PlanningGridBulkUpdateView(APIView):
                         extra=None,
                     )
                     ids = []
-                    for f in qs.only("id", "extra_dimensions_json").iterator():
+                    for f in qs.prefetch_related('extras__key', 'extras__value_obj').iterator():
+                        # Convert PlanningFactExtra to dict for matching
+                        f_extras = {}
+                        for extra_obj in f.extras.all():
+                            f_extras[extra_obj.key.key] = extra_obj.object_id
+                        
                         if self._extra_matches(
-                            f.extra_dimensions_json, extra,
+                            f_extras, extra,
                             code_to_pk=code_to_pk, pk_to_code=pk_to_code
                         ):
                             ids.append(f.id)
@@ -548,9 +595,14 @@ class PlanningGridBulkUpdateView(APIView):
                     base_qs = base_qs.filter(service__isnull=True)
 
                 target = None
-                for f in base_qs.iterator():
+                for f in base_qs.prefetch_related('extras__key', 'extras__value_obj').iterator():
+                    # Convert PlanningFactExtra to dict for matching
+                    f_extras = {}
+                    for extra_obj in f.extras.all():
+                        f_extras[extra_obj.key.key] = extra_obj.object_id
+                    
                     if self._extra_matches(
-                        f.extra_dimensions_json, extra,
+                        f_extras, extra,
                         code_to_pk=code_to_pk, pk_to_code=pk_to_code
                     ):
                         target = f
@@ -560,20 +612,26 @@ class PlanningGridBulkUpdateView(APIView):
                 if target:
                     target.request = dr
                     target.value = val
-                    if (target.extra_dimensions_json or {}) != extra:
-                        target.extra_dimensions_json = extra
-                        target.save(update_fields=["request", "value", "extra_dimensions_json"])
-                    else:
-                        target.save(update_fields=["request", "value"])
+                    target.save(update_fields=["request", "value"])
+                    
+                    # Update extra dimensions
+                    target.extras.all().delete()
+                    for key, (content_type, object_id) in extra.items():
+                        dim_key = DimensionKey.objects.get(key=key)
+                        PlanningFactExtra.objects.create(
+                            fact=target,
+                            key=dim_key,
+                            content_type=content_type,
+                            object_id=object_id
+                        )
                 else:
-                    PlanningFact.objects.create(
+                    fact = PlanningFact.objects.create(
                         request=dr,
                         session=session,
                         org_unit=org,
                         service=(svc_obj if svc_flag == "VAL" else None),
                         period=per,
                         key_figure=kf,
-                        extra_dimensions_json=extra,
                         version=ly.version,
                         year=ly.year,
                         uom=kf.default_uom,
@@ -581,6 +639,16 @@ class PlanningGridBulkUpdateView(APIView):
                         ref_value=Decimal("0"),
                         ref_uom=None,
                     )
+                    
+                    # Create extra dimensions
+                    for key, (content_type, object_id) in extra.items():
+                        dim_key = DimensionKey.objects.get(key=key)
+                        PlanningFactExtra.objects.create(
+                            fact=fact,
+                            key=dim_key,
+                            content_type=content_type,
+                            object_id=object_id
+                        )
                 updated += 1
 
             except Exception as e:

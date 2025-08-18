@@ -5,7 +5,7 @@ A Django-based enterprise-grade **Business Planning System** supporting dynamic 
 ## ✨ Features
 
 - 📐 **Dynamic Planning Layouts**: Define any combination of dimensions (OrgUnit, Service, Account, Period, etc.) with customizable structure
-- 📊 **Flexible Fact Storage**: EAV-style `PlanningFact` with JSONB extra dimensions and unit-of-measure (UoM) support
+- 📊 **Flexible Fact Storage**: EAV-style `PlanningFact` with proper FK-based extra dimensions via `PlanningFactExtra` and unit-of-measure (UoM) support
 - 🧮 **Formula Engine**: Excel-like rules using constants, sub-formulas, and dimension-based expressions
 - 🔄 **Distribution Functions**: Copy, distribute, currency convert, and reset operations
 - 🔐 **Version & Workflow**:
@@ -36,7 +36,9 @@ A Django-based enterprise-grade **Business Planning System** supporting dynamic 
 | Model | Description |
 |-------|-------------|
 | `PlanningLayoutYear` | Layout definition per year/version with dimensions and key figures |
-| `PlanningFact` | Fact table with flexible dimensions via JSONB |
+| `PlanningFact` | Fact table with first-class dimensions and FK-based extras |
+| `PlanningFactExtra` | Extra dimensions with proper FK relationships |
+| `DimensionKey` | Registry of valid dimension keys for validation |
 | `PlanningSession` | Session per OrgUnit within a scenario |
 | `PlanningScenario` | Scenario with multiple workflow steps |
 | `DataRequest` | Audit trail for all planning changes |

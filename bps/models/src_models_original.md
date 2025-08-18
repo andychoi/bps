@@ -75,11 +75,10 @@ class PlanningFact(models.Model):
     session     = models.ForeignKey(PlanningSession, on_delete=models.CASCADE)
     version     = models.ForeignKey(Version, on_delete=models.PROTECT)
     year        = models.ForeignKey(Year, on_delete=models.PROTECT)
-    period      = models.ForeignKey(Period, on_delete=models.PROTECT)
+    period      = models.ForeignKey(Period, on_delete=models.PROTECT, null=True, blank=True)
     org_unit    = models.ForeignKey(OrgUnit, on_delete=models.PROTECT)
     service   = models.ForeignKey(Service, null=True, blank=True, on_delete=models.PROTECT)
     account   = models.ForeignKey(Account, null=True, blank=True, on_delete=models.PROTECT)
-    extra_dimensions_json = models.JSONField(default=dict, help_text="Mapping of extra dimension name → selected dimension key: e.g. {'Position':123, 'SkillGroup':'Developer'}")
     key_figure  = models.ForeignKey(KeyFigure, on_delete=models.PROTECT)
     value       = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     uom         = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name='+', null=True)
@@ -105,6 +104,7 @@ class PlanningFact(models.Model):
         ).factor
         return round(self.value * rate, 2)
 from .models_view import *
+from .models_extras import *
 class PlanningFactDimension(models.Model):
     fact       = models.ForeignKey(PlanningFact, on_delete=models.CASCADE, related_name="fact_dimensions")
     dimension = models.ForeignKey(PlanningLayoutDimension, on_delete=models.PROTECT)
@@ -300,7 +300,7 @@ class FormulaRunEntry(models.Model):
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
-from mptt.models import TreeForeignKey
+from django.db.models import Q
 from .models_dimension import OrgUnit
 User = settings.AUTH_USER_MODEL
 class OrgUnitAccess(models.Model):
@@ -308,7 +308,7 @@ class OrgUnitAccess(models.Model):
     SUBTREE = "SUBTREE"
     SCOPE_CHOICES = [(EXACT, "Exact"), (SUBTREE, "Subtree")]
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="ou_access")
-    org_unit = TreeForeignKey(OrgUnit, on_delete=models.CASCADE, related_name="user_access")
+    org_unit = models.ForeignKey(OrgUnit, on_delete=models.CASCADE, related_name="user_access")
     scope = models.CharField(max_length=10, choices=SCOPE_CHOICES, default=SUBTREE)
     can_edit = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -316,6 +316,57 @@ class OrgUnitAccess(models.Model):
         unique_together = ("user", "org_unit", "scope")
     def __str__(self):
         return f"{self.user} → {self.org_unit} [{self.scope}]"
+    def units_qs(self):
+        base = OrgUnit.objects.filter(pk=self.org_unit_id)
+        if self.scope == self.SUBTREE:
+            return base.union(self.org_unit.get_descendants())
+        return base
+    @classmethod
+    def scope_for_user(cls, user, *, include_delegations=True):
+        qs = OrgUnit.objects.none()
+        for access in cls.objects.filter(user=user).select_related("org_unit"):
+            qs = qs.union(access.units_qs())
+        if include_delegations:
+            now = timezone.now()
+            dels = Delegation.objects.filter(
+                delegatee=user,
+                active=True
+            ).filter(
+                Q(starts_at__isnull=True) | Q(starts_at__lte=now),
+                Q(ends_at__isnull=True)   | Q(ends_at__gte=now),
+            ).select_related("delegator")
+            if dels.exists():
+                delegator_ids = list(dels.values_list("delegator_id", flat=True))
+                for access in cls.objects.filter(user_id__in=delegator_ids).select_related("org_unit"):
+                    qs = qs.union(access.units_qs())
+        return qs.distinct()
+    @classmethod
+    def can_edit_orgunit(cls, user, org_unit, *, include_delegations=True):
+        anc_ids = list(org_unit.get_ancestors().values_list("id", flat=True)) + [org_unit.id]
+        base = cls.objects.filter(user=user, can_edit=True).filter(
+            Q(scope=cls.EXACT, org_unit_id=org_unit.id) |
+            Q(scope=cls.SUBTREE, org_unit_id__in=anc_ids)
+        )
+        if base.exists():
+            return True
+        if include_delegations:
+            now = timezone.now()
+            delegator_ids = list(
+                Delegation.objects.filter(
+                    delegatee=user, active=True
+                ).filter(
+                    Q(starts_at__isnull=True) | Q(starts_at__lte=now),
+                    Q(ends_at__isnull=True)   | Q(ends_at__gte=now),
+                ).values_list("delegator_id", flat=True)
+            )
+            if delegator_ids:
+                via_del = cls.objects.filter(user_id__in=delegator_ids, can_edit=True).filter(
+                    Q(scope=cls.EXACT, org_unit_id=org_unit.id) |
+                    Q(scope=cls.SUBTREE, org_unit_id__in=anc_ids)
+                )
+                if via_del.exists():
+                    return True
+        return False
 class Delegation(models.Model):
     delegator = models.ForeignKey(User, on_delete=models.CASCADE, related_name="delegations_out")
     delegatee = models.ForeignKey(User, on_delete=models.CASCADE, related_name="delegations_in")
@@ -402,6 +453,43 @@ class PriceType(InfoObject):
     pass
 ```
 
+### `models_extras.py`
+```python
+from django.db import models
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
+class DimensionKey(models.Model):
+    key = models.CharField(max_length=64, unique=True)
+    content_type = models.ForeignKey(ContentType, on_delete=models.PROTECT)
+    def __str__(self):
+        return self.key
+class PlanningFactExtra(models.Model):
+    fact = models.ForeignKey(
+        "bps.PlanningFact",
+        on_delete=models.CASCADE,
+        related_name="extras",
+        db_index=True,
+    )
+    key = models.ForeignKey(DimensionKey, on_delete=models.PROTECT, db_index=True)
+    content_type = models.ForeignKey(ContentType, on_delete=models.PROTECT)
+    object_id    = models.PositiveIntegerField()
+    value_obj    = GenericForeignKey("content_type", "object_id")
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["fact", "key"],
+                name="uniq_fact_key",
+            ),
+            models.Index(fields=["key", "content_type", "object_id"], name="bps_factextra_ct_obj_idx",),
+        ]
+    def clean(self):
+        if self.key_id and self.content_type_id:
+            if self.key.content_type_id != self.content_type_id:
+                raise ValidationError(
+                    {"content_type": f"Key '{self.key.key}' must reference {self.key.content_type}."}
+                )
+```
+
 ### `models_function.py`
 ```python
 from django.db import models, transaction
@@ -448,6 +536,10 @@ class PlanningLayoutDimension(models.Model):
     )
     order         = models.PositiveSmallIntegerField(default=0,
                       help_text="Defines the sequence in the grid")
+    group_priority = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="1,2,3… to enable nested row grouping (lower = outer); leave blank to not group by this dimension."
+    )
     class Meta:
         ordering = ["order", "id"]
         unique_together = ("layout", "content_type", "is_row", "is_column", "is_header")
@@ -499,6 +591,7 @@ class PlanningKeyFigure(models.Model):
     key_figure    = models.ForeignKey('bps.KeyFigure', on_delete=models.CASCADE)
     is_editable   = models.BooleanField(default=True)
     is_computed   = models.BooleanField(default=False)
+    is_yearly     = models.BooleanField(default=False, help_text="If true, this key figure is planned at year level without periods for this layout.")
     formula       = models.TextField(blank=True)
     display_order = models.PositiveSmallIntegerField(default=0)
     class Meta:

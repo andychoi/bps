@@ -68,6 +68,7 @@ class Command(BaseCommand):
             ("LICENSE_VOLUME", "License Volume", False, ea),
             ("LICENSE_UNIT_PRICE", "License Unit Price", False, usd),
             ("LICENSE_COST", "License Cost", False, usd),
+            ("INFRA_COST", "Infrastructure Cost", False, usd),
             ("ADMIN_OVERHEAD", "Admin Overhead", False, usd),
             ("TOTAL_COST", "Total Service Cost", False, usd),
             ("UTIL", "Utilization %", True, None),

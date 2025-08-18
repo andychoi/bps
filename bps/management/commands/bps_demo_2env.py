@@ -4,6 +4,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.core.management.base import BaseCommand
 from bps.models.models import PeriodGrouping, KeyFigure
 from bps.models.models_dimension import OrgUnit, InternalOrder, Service, Year, Version
+from bps.models.models_extras import DimensionKey
 from bps.models.models_layout import (
     PlanningLayout,
     PlanningLayoutYear,
@@ -34,6 +35,7 @@ LAYOUT_DEFS = [
     ("SYS_DEMAND","System Demand by Skill & Level"),
     ("RES_ALLOC", "Resource Allocation to Systems"),
     ("SW_LICENSE","Software License Cost Planning"),
+    ("INFRA_COST","Infrastructure Cost Planning"),
     ("ADMIN_OVH", "Admin Overhead Allocation"),
     ("SRV_COST",  "Service Cost Summary"),
 ]
@@ -44,7 +46,8 @@ ROW_DIMS = {
     "RES_CON":    ["InternalOrder", "Skill"],
     "SYS_DEMAND": ["Service", "Skill"],
     "RES_ALLOC":  ["Position", "Service"],
-    "SW_LICENSE": ["Service", "InternalOrder"],
+    "SW_LICENSE": ["Service"],
+    "INFRA_COST": ["Service"],
     "ADMIN_OVH":  ["OrgUnit", "Service"],
     "SRV_COST":   ["Service"],
 }
@@ -54,18 +57,20 @@ HEADER_DIMS = {
     "SYS_DEMAND": ["OrgUnit"],
     "RES_ALLOC":  ["OrgUnit"],
     "SW_LICENSE": ["OrgUnit"],
+    "INFRA_COST": ["OrgUnit"],
     "ADMIN_OVH":  ["OrgUnit"],
     "SRV_COST":   ["OrgUnit"],
 }
 
 KF_DEFS = {
-    "RES_FTE":   ["FTE", "MAN_MONTH"],
-    "RES_CON":   ["MAN_MONTH", "COST"],
-    "SYS_DEMAND":["MAN_MONTH"],
-    "RES_ALLOC": ["MAN_MONTH", "UTIL"],
+    "RES_FTE":   ["FTE", "COST"],
+    "RES_CON":   ["FTE", "COST"],
+    "SYS_DEMAND":["FTE", "COST"],
+    "RES_ALLOC": ["FTE", "UTIL", "COST"],
     "SW_LICENSE":["LICENSE_VOLUME","LICENSE_UNIT_PRICE","LICENSE_COST"],
+    "INFRA_COST":["INFRA_COST"],
     "ADMIN_OVH": ["ADMIN_OVERHEAD"],
-    "SRV_COST":  ["COST","LICENSE_COST","ADMIN_OVERHEAD","TOTAL_COST"],
+    "SRV_COST":  ["COST","LICENSE_COST","INFRA_COST","ADMIN_OVERHEAD","TOTAL_COST"],
 }
 
 class Command(BaseCommand):
@@ -129,7 +134,9 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS("✔️ Template-level PlanningLayoutDimension created"))
 
-        # 3) Link KeyFigures to the layout template
+        # 3) Link KeyFigures to the layout template with yearly configuration
+        yearly_layouts = {"RES_FTE", "RES_CON", "SYS_DEMAND", "RES_ALLOC", "SW_LICENSE", "INFRA_COST", "SRV_COST"}
+        
         for code, layout in layouts.items():
             desired = KF_DEFS.get(code, [])
             PlanningKeyFigure.objects.filter(layout=layout).delete()
@@ -143,9 +150,37 @@ class Command(BaseCommand):
                     key_figure=kf,
                     is_editable=True,
                     is_computed=False,
+                    is_yearly=(code in yearly_layouts),
                     display_order=idx,
                 )
         self.stdout.write(self.style.SUCCESS("✔️ PlanningKeyFigure linked to global KeyFigures"))
+
+        # 3.5) Create DimensionKey registry for extra dimensions
+        dimension_keys = [
+            ("Position", Position),
+            ("Skill", Skill),
+            ("InternalOrder", InternalOrder),
+            ("Service", Service),
+            ("OrgUnit", OrgUnit),
+            ("ResourceType", str),  # For RES_CON synthetic dimension
+            ("Level", str),         # For RES_CON synthetic dimension
+            ("Country", str),       # For RES_CON synthetic dimension
+        ]
+        
+        created_keys = 0
+        for key, model_class in dimension_keys:
+            if model_class == str:
+                # Skip synthetic dimensions for now - they need special handling
+                continue
+            ct = ContentType.objects.get_for_model(model_class)
+            _, created = DimensionKey.objects.get_or_create(
+                key=key,
+                defaults={'content_type': ct, 'is_active': True}
+            )
+            if created:
+                created_keys += 1
+        
+        self.stdout.write(self.style.SUCCESS(f"✔️ Created {created_keys} DimensionKey entries"))
 
         # 4) Instances (per year/version) + org units + header defaults
         root = OrgUnit.get_root_nodes().first()

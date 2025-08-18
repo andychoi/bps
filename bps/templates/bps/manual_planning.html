@@ -548,9 +548,10 @@ Manual Planning – {{ layout_year.layout.name }} ({{ layout_year.year.code }}/{
       if (value) extraDims[cd.key] = value;
     });
 
-    if (Object.keys(extraDims).length > 0) {
-      base.extra_dimensions_json = extraDims;
-    }
+    // Send extra dimensions as flat fields for API processing
+    Object.entries(extraDims).forEach(([key, value]) => {
+      base[key] = value;
+    });
     return base;
   }
 
